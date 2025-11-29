@@ -384,7 +384,6 @@ def calc(expression):
     tokens = tokenize_infix(expression)
     parser_ast = InfixParser(tokens)
     ast = parser_ast.parse()
-    print(f"AST {ast}")
     evaluated = eval_expression(ast)
     return evaluated
 
