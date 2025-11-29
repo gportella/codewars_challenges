@@ -35,7 +35,6 @@ We want to create an interpreter of assembler which will support the following i
 ## Output Format
 
 - The normal output format is a string returned with the `end` command.
-- For Scala and Rust, wrap the string in `Option` according to platform requirements.
 - If the program finishes without executing `end`, return `-1` (integer).
 
 ## Input Format
