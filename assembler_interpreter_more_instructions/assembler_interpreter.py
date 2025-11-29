@@ -1,13 +1,16 @@
 #! /usr/bin/env python
 
 import operator
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Callable, Protocol, Dict, List, Optional, Union, Tuple
+from typing import Callable, Protocol, Dict, List, Optional, Union, Tuple, Deque
 import logging
 
 LOG_LEVEL = logging.ERROR
 logging.basicConfig(level=LOG_LEVEL, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger()
+
+MsgSegment = Tuple[bool, str]
 
 
 def parse_literal(token: str) -> Optional[int]:
@@ -49,9 +52,9 @@ class ExecutionContext:
     memory: Optional[Dict[int, int]] = None
     labels: Optional[Dict[str, int]] = field(default_factory=dict)
     ip: int = 0
-    next_ip: Optional[int] = (
-        None  # this is to return to the right place after a function
-    )
+    call_stack: Deque[int] = field(default_factory=deque)
+    output_parts: List[str] = field(default_factory=list)
+    terminated: bool = False
     max_len: int = 0  # to keep of total number of instructions
 
 
@@ -166,7 +169,7 @@ class Jump(Instruction):
 
         if self.op is None:
             if self.is_call:
-                ctx.next_ip = ctx.ip + 1
+                ctx.call_stack.append(ctx.ip + 1)
             ctx.ip = ctx.labels[self.lbl]
             return
 
@@ -181,17 +184,41 @@ class Jump(Instruction):
 
 @dataclass(frozen=True)
 class Return(Instruction):
-    """Jumps back to next_ip, should be used after hitting ret"""
+    """Return to caller using the stored call stack"""
 
     def exe(self, ctx: ExecutionContext):
-        if ctx.next_ip is None:
+        if not ctx.call_stack:
             raise Exception("Found ret outside subroutine")
-        if ctx.next_ip < 0 or ctx.next_ip >= ctx.max_len:
-            raise ValueError(f"Terrible, {ctx.next_ip} is out of bounds")
+        next_ip = ctx.call_stack.pop()
+        if next_ip < 0 or next_ip >= ctx.max_len:
+            raise ValueError(f"Terrible, {next_ip} is out of bounds")
 
-        ctx.ip = ctx.next_ip
-        ctx.next_ip = None
+        ctx.ip = next_ip
         return
+
+
+@dataclass(frozen=True)
+class Msg(Instruction):
+    """Append literal or register contents to the program output buffer"""
+
+    segments: Tuple[MsgSegment, ...]
+
+    def exe(self, ctx: ExecutionContext):
+        for is_register, token in self.segments:
+            if is_register:
+                ctx.output_parts.append(str(ctx.registers.read_signed(token)))
+            else:
+                ctx.output_parts.append(token)
+        ctx.ip += 1
+
+
+@dataclass(frozen=True)
+class End(Instruction):
+    """Mark program termination"""
+
+    def exe(self, ctx: ExecutionContext):
+        ctx.terminated = True
+        ctx.ip = ctx.max_len
 
 
 @dataclass(frozen=True)
@@ -210,12 +237,23 @@ class jnz(Instruction):
         ctx.ip += self.step if value != 0 else 1
 
 
-def tokenize_instruction(line: str) -> List[str]:
+def strip_comments(line: str) -> str:
     cleaned = line
     for marker in (";", "#"):
         cleaned = cleaned.split(marker, 1)[0]
-    cleaned = cleaned.strip()
-    return cleaned.split() if cleaned else []
+    return cleaned.strip()
+
+
+def tokenize_instruction(line: str) -> List[str]:
+    cleaned = strip_comments(line)
+    if not cleaned:
+        return []
+    tokens: List[str] = []
+    for token in cleaned.split():
+        trimmed = token.rstrip(",")
+        if trimmed:
+            tokens.append(trimmed)
+    return tokens
 
 
 def parse_labels(line: str) -> Optional[str]:
@@ -228,9 +266,43 @@ def parse_labels(line: str) -> Optional[str]:
         return op.replace(":", "")
 
 
+def parse_msg_segments(argument_str: str) -> Tuple[MsgSegment, ...]:
+    segments: List[MsgSegment] = []
+    idx = 0
+    length = len(argument_str)
+    while idx < length:
+        char = argument_str[idx]
+        if char.isspace() or char == ",":
+            idx += 1
+            continue
+        if char == "'":
+            end_idx = argument_str.find("'", idx + 1)
+            if end_idx == -1:
+                raise ValueError("Unterminated string literal in msg")
+            segments.append((False, argument_str[idx + 1 : end_idx]))
+            idx = end_idx + 1
+            continue
+        next_sep = idx
+        while (
+            next_sep < length
+            and not argument_str[next_sep].isspace()
+            and argument_str[next_sep] != ","
+        ):
+            next_sep += 1
+        token = argument_str[idx:next_sep]
+        literal = parse_literal(token)
+        if literal is not None:
+            segments.append((False, str(literal)))
+        else:
+            segments.append((True, token))
+        idx = next_sep
+    return tuple(segments)
+
+
 def parse_instruction(line: str) -> Optional[Instruction]:
     """Well skip labels here"""
-    parts = tokenize_instruction(line)
+    stripped = strip_comments(line)
+    parts = [p.rstrip(",") for p in stripped.split() if p.rstrip(",")]
     if not parts:
         raise ValueError("Empty instruction line")
 
@@ -281,8 +353,10 @@ def parse_instruction(line: str) -> Optional[Instruction]:
         return Jump(lbl=parts[1], op=operator.lt)
     if op == "call" and len(parts) == 2:
         return Jump(lbl=parts[1], is_call=True)
-    if op in {"ret", "end"} and len(parts) == 1:
+    if op == "ret" and len(parts) == 1:
         return Return()
+    if op == "end" and len(parts) == 1:
+        return End()
     if op == "jnz" and len(parts) == 3:
         literal = parse_literal(parts[2])
         if literal is None:
@@ -290,6 +364,10 @@ def parse_instruction(line: str) -> Optional[Instruction]:
         condition = parse_literal(parts[1])
         condition_operand = condition if condition is not None else parts[1]
         return jnz(condition_operand, literal)
+    if op == "msg":
+        argument_str = stripped[len(parts[0]) :].strip()
+        segments = parse_msg_segments(argument_str)
+        return Msg(segments)
 
     if ":" in op[-1]:
         return None
@@ -297,8 +375,10 @@ def parse_instruction(line: str) -> Optional[Instruction]:
     raise ValueError(f"Unsupported instruction format: {line!r}")
 
 
-def build_instructions(lines: List[str]) -> Tuple[List[Instruction], Dict[str, int]]:
-    program_src = "\n".join(lines)
+def build_instructions(
+    lines: Union[str, List[str]],
+) -> Tuple[List[Instruction], Dict[str, int]]:
+    program_src = lines if isinstance(lines, str) else "\n".join(lines)
     instructions: List[Instruction] = []
     labels: Dict[str, int] = {}
     for line in program_src.splitlines():
@@ -329,7 +409,7 @@ class Program:
         return xx
 
 
-def simple_assembler(program):
+def assembler_interpreter(program):
     inst, lbls = build_instructions(program)
     registers = Registers()
     ctx = ExecutionContext(registers=registers, labels=lbls, max_len=len(inst))
@@ -337,33 +417,38 @@ def simple_assembler(program):
     for _inst in prg:
         logger.debug(f"stck: {ctx.ip} inst: {_inst}")
         logger.debug(registers.show())
-    reg = ctx.registers.show()
-    return reg
+    if ctx.terminated:
+        return "".join(ctx.output_parts)
+    return -1
 
 
 if __name__ == "__main__":
-    code = """\
-mov c 12
-mov b 0
-mov a 200
-dec a
-inc b
-jnz a -2
-dec c
-mov a b
-jnz c -5
-jnz 0 1
-mov c a"""
-    program_lines = code.splitlines()
-    program_lines_2 = [
-        "mov a 5",
-        "inc a",
-        "dec a",
-        "put a",
-        "jnz a -2",
-        "inc a",
-        "put a",
-    ]
-    program_lines_3 = ["mov a -10", "mov b a", "inc a", "dec b", "jnz a -2"]
-    registers = simple_assembler(program_lines_3)
+    import textwrap
+
+    program = textwrap.dedent(
+        """
+            mov   a, 2
+            mov   b, 10
+            mov   c, a
+            mov   d, b
+            call  proc_func
+            call  print
+            end
+
+            proc_func:
+                cmp   d, 1
+                je    continue
+                mul   c, a
+                dec   d
+                call  proc_func
+
+            continue:
+                ret
+
+            print:
+                msg a, '^', b, ' = ', c
+                ret
+        """
+    )
+    registers = assembler_interpreter(program)
     print(registers)

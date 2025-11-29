@@ -4,7 +4,7 @@ Fancier interpreter compared to [`simple_assembler_interpreter`](../simple_assem
 
 ## Status
 
-> WIP!! just started from simpler version. Let's see how it goes.
+Done! Added tests as I was building it, was getting a bit out of hand.
 
 ## Instruction Set
 
@@ -56,9 +56,7 @@ function:
     div  a, 2
     ret
 """
-```
 
-```
 assembler_interpreter(program)
 ```
 

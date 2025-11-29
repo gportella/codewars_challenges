@@ -1,14 +1,17 @@
 """Basic tests for the simple assembler interpreter."""
 
+import textwrap
+
 from assembler_interpreter import (
     ExecutionContext,
+    Program,
     Registers,
     build_instructions,
     cmp,
     jnz,
     inc,
     mov,
-    simple_assembler,
+    assembler_interpreter,
 )
 
 
@@ -27,6 +30,18 @@ def assert_raises(expected_exception, func, *args, **kwargs):
         raise AssertionError(f"Expected {expected_exception.__name__} to be raised")
 
 
+def execute_program(program):
+    instructions, labels = build_instructions(program)
+    registers = Registers()
+    ctx = ExecutionContext(
+        registers=registers, labels=labels, max_len=len(instructions)
+    )
+    prg = Program(ctx=ctx, exec_plan=instructions)
+    for _ in prg:
+        pass
+    return ctx
+
+
 class TestBasicOperations:
     def test_mov_and_inc_creates_expected_value(self):
         program = [
@@ -35,9 +50,10 @@ class TestBasicOperations:
             "inc a",
         ]
 
-        registers = simple_assembler(program)
+        ctx = execute_program(program)
 
-        assert registers == {"a": 3}
+        assert ctx.registers.show() == {"a": 3}
+        assert assembler_interpreter(program) == -1
 
     def test_mov_copies_between_registers(self):
         program = [
@@ -45,9 +61,10 @@ class TestBasicOperations:
             "mov b a",
         ]
 
-        registers = simple_assembler(program)
+        ctx = execute_program(program)
 
-        assert registers == {"a": -10, "b": -10}
+        assert ctx.registers.show() == {"a": -10, "b": -10}
+        assert assembler_interpreter(program) == -1
 
 
 class TestArithmeticOperations:
@@ -59,9 +76,10 @@ class TestArithmeticOperations:
             "add b a",
         ]
 
-        registers = simple_assembler(program)
+        ctx = execute_program(program)
 
-        assert registers == {"a": 9, "b": 12}
+        assert ctx.registers.show() == {"a": 9, "b": 12}
+        assert assembler_interpreter(program) == -1
 
     def test_sub_with_literal_and_register_operand(self):
         program = [
@@ -71,9 +89,10 @@ class TestArithmeticOperations:
             "sub b a",
         ]
 
-        registers = simple_assembler(program)
+        ctx = execute_program(program)
 
-        assert registers == {"a": 6, "b": -3}
+        assert ctx.registers.show() == {"a": 6, "b": -3}
+        assert assembler_interpreter(program) == -1
 
     def test_mul_with_literal_and_register_operand(self):
         program = [
@@ -83,9 +102,10 @@ class TestArithmeticOperations:
             "mul b a",
         ]
 
-        registers = simple_assembler(program)
+        ctx = execute_program(program)
 
-        assert registers == {"a": 8, "b": 24}
+        assert ctx.registers.show() == {"a": 8, "b": 24}
+        assert assembler_interpreter(program) == -1
 
     def test_div_with_literal_and_register_operand(self):
         program = [
@@ -95,9 +115,10 @@ class TestArithmeticOperations:
             "div b a",
         ]
 
-        registers = simple_assembler(program)
+        ctx = execute_program(program)
 
-        assert registers == {"a": 3, "b": 1}
+        assert ctx.registers.show() == {"a": 3, "b": 1}
+        assert assembler_interpreter(program) == -1
 
 
 class TestConditionalLogic:
@@ -108,9 +129,10 @@ class TestConditionalLogic:
             "jnz a -1",
         ]
 
-        registers = simple_assembler(program)
+        ctx = execute_program(program)
 
-        assert registers == {"a": 0}
+        assert ctx.registers.show() == {"a": 0}
+        assert assembler_interpreter(program) == -1
 
     def test_jnz_with_literal_jump_skips_instruction(self):
         program = [
@@ -120,9 +142,10 @@ class TestConditionalLogic:
             "inc a",
         ]
 
-        registers = simple_assembler(program)
+        ctx = execute_program(program)
 
-        assert registers == {"a": 6}
+        assert ctx.registers.show() == {"a": 6}
+        assert assembler_interpreter(program) == -1
 
     def test_jmp_unconditional_jump_to_label(self):
         program = [
@@ -134,9 +157,10 @@ class TestConditionalLogic:
             "mov b a",
         ]
 
-        registers = simple_assembler(program)
+        ctx = execute_program(program)
 
-        assert registers == {"a": 1, "b": 1}
+        assert ctx.registers.show() == {"a": 1, "b": 1}
+        assert assembler_interpreter(program) == -1
 
     def test_je_jumps_when_values_are_equal(self):
         program = [
@@ -151,9 +175,10 @@ class TestConditionalLogic:
             "end:",
         ]
 
-        registers = simple_assembler(program)
+        ctx = execute_program(program)
 
-        assert registers == {"a": 6, "b": 5}
+        assert ctx.registers.show() == {"a": 6, "b": 5}
+        assert assembler_interpreter(program) == -1
 
     def test_jne_jumps_when_values_are_different(self):
         program = [
@@ -167,9 +192,10 @@ class TestConditionalLogic:
             "end:",
         ]
 
-        registers = simple_assembler(program)
+        ctx = execute_program(program)
 
-        assert registers == {"a": 4, "b": 3}
+        assert ctx.registers.show() == {"a": 4, "b": 3}
+        assert assembler_interpreter(program) == -1
 
     def test_jg_and_jl_follow_cmp_sign(self):
         program = [
@@ -187,9 +213,10 @@ class TestConditionalLogic:
             "end:",
         ]
 
-        registers = simple_assembler(program)
+        ctx = execute_program(program)
 
-        assert registers == {"a": -1, "b": 2, "c": -1}
+        assert ctx.registers.show() == {"a": -1, "b": 2, "c": -1}
+        assert assembler_interpreter(program) == -1
 
     def test_jge_and_jle_trigger_on_equality(self):
         program = [
@@ -206,9 +233,10 @@ class TestConditionalLogic:
             "end:",
         ]
 
-        registers = simple_assembler(program)
+        ctx = execute_program(program)
 
-        assert registers == {"a": 7, "b": 7, "c": 1}
+        assert ctx.registers.show() == {"a": 7, "b": 7, "c": 1}
+        assert assembler_interpreter(program) == -1
 
     def test_jump_raises_when_label_missing(self):
         program = [
@@ -278,9 +306,10 @@ class TestCommentHandling:
             "inc a ; bump",
         ]
 
-        registers = simple_assembler(program)
+        ctx = execute_program(program)
 
-        assert registers == {"a": 3}
+        assert ctx.registers.show() == {"a": 3}
+        assert assembler_interpreter(program) == -1
 
     def test_full_line_comment_is_ignored(self):
         program = [
@@ -290,9 +319,10 @@ class TestCommentHandling:
             "dec a ; decrement once",
         ]
 
-        registers = simple_assembler(program)
+        ctx = execute_program(program)
 
-        assert registers == {"a": 1}
+        assert ctx.registers.show() == {"a": 1}
+        assert assembler_interpreter(program) == -1
 
 
 class TestLabelHandling:
@@ -328,9 +358,10 @@ class TestCallAndReturn:
             "inc a",
         ]
 
-        registers = simple_assembler(program)
+        ctx = execute_program(program)
 
-        assert registers == {"a": 11}
+        assert ctx.registers.show() == {"a": 11}
+        assert assembler_interpreter(program) == -1
 
     def test_ret_without_prior_call_raises(self):
         program = [
@@ -344,3 +375,123 @@ class TestCallAndReturn:
         )
 
         assert_raises(Exception, instructions[0].exe, ctx)
+
+    def test_nested_calls_return_in_last_in_first_out_order(self):
+        program = [
+            "jmp main",
+            "outer:",
+            "mul a 2",
+            "call inner",
+            "ret",
+            "inner:",
+            "add a 3",
+            "ret",
+            "main:",
+            "mov a 1",
+            "call outer",
+            "inc a",
+            "mov b a",
+        ]
+
+        ctx = execute_program(program)
+
+        assert ctx.registers.show() == {"a": 6, "b": 6}
+        assert assembler_interpreter(program) == -1
+
+
+class TestMessaging:
+    def test_msg_accumulates_literals_and_registers(self):
+        program = textwrap.dedent(
+            """
+            mov  a, 5
+            msg  'Value before: ', a
+            inc  a
+            msg  ', after: ', a
+            end
+            """
+        ).strip()
+
+        result = assembler_interpreter(program)
+
+        assert result == "Value before: 5, after: 6"
+        ctx = execute_program(program)
+        assert ctx.registers.show() == {"a": 6}
+
+    def test_msg_without_end_does_not_return_output(self):
+        program = textwrap.dedent(
+            """
+            mov  a, 1
+            msg  'value: ', a
+            """
+        ).strip()
+
+        result = assembler_interpreter(program)
+
+        assert result == -1
+        ctx = execute_program(program)
+        assert ctx.registers.show() == {"a": 1}
+
+
+class TestIntegrationScenarios:
+    def test_missing_ret_leaves_call_stack_and_returns_default_output(self):
+        program = textwrap.dedent(
+            """
+            call  func1
+            call  print
+            end
+
+            func1:
+                call  func2
+                ret
+
+            func2:
+                ret
+
+            print:
+                msg 'This program should return -1'
+            """
+        ).strip()
+
+        result = assembler_interpreter(program)
+
+        assert result == -1
+        ctx = execute_program(program)
+        assert ctx.output_parts == ["This program should return -1"]
+        assert ctx.terminated is False
+        assert len(ctx.call_stack) == 1
+
+    def test_recursive_calls_compute_power_and_return_message(self):
+        program = textwrap.dedent(
+            """
+            mov   a, 2
+            mov   b, 10
+            mov   c, a
+            mov   d, b
+            call  proc_func
+            call  print
+            end
+
+            proc_func:
+                cmp   d, 1
+                je    continue
+                mul   c, a
+                dec   d
+                call  proc_func
+
+            continue:
+                ret
+
+            print:
+                msg a, '^', b, ' = ', c
+                ret
+            """
+        ).strip()
+
+        result = assembler_interpreter(program)
+
+        assert result == "2^10 = 1024"
+        ctx = execute_program(program)
+        assert ctx.registers.show() == {"a": 2, "b": 10, "c": 1024, "d": 1}
+        assert ctx.output_parts == ["2", "^", "10", " = ", "1024"]
+        assert ctx.terminated is True
+        assert not ctx.call_stack
