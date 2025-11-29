@@ -275,9 +275,11 @@ def calc(expression):
     tokens = tokenize_infix(expression)
     parser_ast = InfixParser(tokens)
     ast = parser_ast.parse()
-    print(f"AST {ast}")
     evaluated = eval_expression(ast)
     return evaluated
 
 
-infix_expr = ["-7 * -(6 / 3)", "-7.131343 * 3.34413"]
+if __name__ == "__main__":
+    infix_expr = "-7.314 * -(6 / 3)"
+    assert calc(infix_expr) == 14.628
+    print("Worked")
