@@ -1,4 +1,5 @@
 #! /usr/bin/env python
+""" Differentiate simple polynomial and evaluate at a point"""
 
 import re
 from dataclasses import dataclass
