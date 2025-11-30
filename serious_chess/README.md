@@ -1,5 +1,9 @@
 # DESCRIPTION:
 
+## Status 
+
+>> WIP! Feeling ambitious, will go for rook endagame, but i might extend it...
+
 One of the basic chess endgames is where only three pieces remain on the board: the two kings and one rook. By 1970 it was proved that the player having the rook can win the game in at most 16 moves. Can you write code that plays this endgame that well?
 
 ## Short Overview
