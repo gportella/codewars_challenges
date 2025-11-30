@@ -247,6 +247,8 @@ def init_bitboards(board: Board):
 if __name__ == "__main__":
     # fen = parse_fen("8/8/2k5/8/4KP2/8/8/8 w - - 0 1")
     fen = parse_fen(ROOK_ENDGAME)
+    # fen = parse_fen(RUY_LOPEZ_FEN)
+
     board = Board(pieces=fen.pieces)
     print("The board\n")
     print_board(board)
