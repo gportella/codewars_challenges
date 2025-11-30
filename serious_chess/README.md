@@ -42,7 +42,7 @@ Checkmate after more than 16 white moves: the test fails. Note that the test is 
 Stalemate: the test fails.
 The threefold position or 50-move rule applies: the test fails.
 
-##Tests
+## Tests
 
 The example test cases can be finished with one move. If somehow your code takes up to 16 moves for a mate, the tests will pass. But it seems reasonable that your code should detect mate-in-one positions.
 
