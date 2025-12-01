@@ -48,9 +48,7 @@ class TestRookMoveGeneration:
         board.pieces[rook_square] = ce.Pcs.R
         ce.init_bitboards(board)
 
-        mask = ce.generate_rook_attack_bm(
-            board, rook_square, ce.Color.white
-        )
+        mask = ce.generate_rook_attack_bm(board, rook_square, ce.Color.white)
         moves = {ce.Sqr(sq64) for sq64 in ce.iter_bits(int(mask))}
 
         expected_targets = {

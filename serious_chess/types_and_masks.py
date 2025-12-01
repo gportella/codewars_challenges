@@ -232,7 +232,7 @@ def generate_k_attack_bm(
 
     attacks = KING_ATTACK_PATTERNS[sq64]
     friendly_occ = board.occupied[side]
-    legal_attacks = to_u64(attacks & ~friendly_occ)
+    legal_attacks = to_u64(int(attacks) & ~int(friendly_occ))
 
     if debug:
         print_attack_mask(legal_attacks, pieces=board.pieces)
