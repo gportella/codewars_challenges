@@ -1,6 +1,6 @@
 # Description
 
->> **WIP**: Not finished yet, but not sure I will get it to a point to pass the tests in the kata. Too many ways of expressing the same expression, might end up fighting against the test suite and not sure worth the pain. 
+>> Done!
 
 Differentiate a mathematical expression given as a string in prefix notation. The result should be the derivative of the expression returned in prefix notation.
 
