@@ -420,6 +420,7 @@ def contig_has_mismatches(reads: List[str], contig: str) -> bool:
 
 def reconstruct_genome(reads: List[str], has_errors: bool = False) -> str:
     my_solution = reconstruct_genome_scs(reads, has_errors=has_errors)
+    # print("Initial assembly:", my_solution)
     canonical_mine = canonicalize_circular(my_solution)
     has_mismatches_contig = contig_has_mismatches(reads, canonical_mine)
     len_read = len(next(iter(reads)))
