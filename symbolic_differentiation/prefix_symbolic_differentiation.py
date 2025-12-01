@@ -75,7 +75,8 @@ class Func:
 
 
 TOKEN_RE = re.compile(
-    r"\s*(\(|\)|\*\*|[+\-*/^]|\d+(?:\.\d+)?|[A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE
+    r"\s*(\(|\)|\*\*|-?\d+(?:\.\d+)?|[+\-*/^]|[A-Za-z_][A-Za-z0-9_]*)",
+    re.MULTILINE,
 )
 NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 VAR_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -104,12 +105,107 @@ def _make_add(left, right):
     return Add(left_terms + right_terms)
 
 
-# Decide whether _make_mul should pull any Div from left/right so the final shape doesn’t end up with nested Div under multiplication.
 def _make_mul(left, right):
-    # if left
+    """Divs are a pain... treat multiplication involving Div nodes specially."""
+    if isinstance(left, Div) and isinstance(right, Div):
+        left_num, left_denum = _split_div(left)
+        right_num, right_denum = _split_div(right)
+        return Div(left_num + right_num, left_denum + right_denum)
+    if isinstance(left, Div) and not isinstance(right, Div):
+        left_num, left_denum = _split_div(left)
+        return Div(left_num + (right,), left_denum)
+    if not isinstance(left, Div) and isinstance(right, Div):
+        right_num, right_denum = _split_div(right)
+        return Div((left,) + right_num, right_denum)
     left_factors = left.factors if isinstance(left, Mul) else (left,)
     right_factors = right.factors if isinstance(right, Mul) else (right,)
     return Mul(left_factors + right_factors)
+
+
+def _make_mul_many(*factors):
+    if not factors:
+        return Num(1)
+
+    filtered = []
+    for factor in factors:
+        if isinstance(factor, Num):
+            if factor.value == 0:
+                return Num(0)
+            if factor.value == 1:
+                continue
+        filtered.append(factor)
+
+    if not filtered:
+        return Num(1)
+
+    result = filtered[0]
+    for factor in filtered[1:]:
+        result = _make_mul(result, factor)
+    return result
+
+
+def _is_zero(node):
+    return isinstance(node, Num) and node.value == 0
+
+
+def _is_one(node):
+    return isinstance(node, Num) and node.value == 1
+
+
+def _contains_func(node, names):
+    if isinstance(node, Func):
+        if node.name in names:
+            return True
+        return _contains_func(node.child, names)
+    if isinstance(node, (Add, Mul)):
+        return any(_contains_func(child, names) for child in node)
+    if isinstance(node, Div):
+        return any(_contains_func(child, names) for child in node.num_factors) or any(
+            _contains_func(child, names) for child in node.denum_factors
+        )
+    if isinstance(node, Pow):
+        return _contains_func(node.base, names) or _contains_func(node.exp, names)
+    if isinstance(node, Neg):
+        return _contains_func(node.child, names)
+    return False
+
+
+def _is_numeric(node):
+    if isinstance(node, Num):
+        return True
+    if isinstance(node, Var):
+        return False
+    if isinstance(node, Neg):
+        return _is_numeric(node.child)
+    if isinstance(node, Func):
+        return _is_numeric(node.child)
+    if isinstance(node, Add):
+        return all(_is_numeric(t) for t in node.terms)
+    if isinstance(node, Mul):
+        return all(_is_numeric(f) for f in node.factors)
+    if isinstance(node, Div):
+        return all(_is_numeric(f) for f in node.num_factors) and all(
+            _is_numeric(f) for f in node.denum_factors
+        )
+    if isinstance(node, Pow):
+        return _is_numeric(node.base) and _is_numeric(node.exp)
+    return False
+
+
+def _evaluate_if_numeric(node):
+    if isinstance(node, Num):
+        return node
+    if _is_numeric(node):
+        if _contains_func(node, {"exp"}):
+            return node
+        try:
+            value = eval_ast(node, 0)
+        except (ZeroDivisionError, ValueError):
+            return node
+        if isinstance(value, complex):
+            return node
+        return Num(_simplify_number(value))
+    return node
 
 
 def _split_div(node):
@@ -143,8 +239,8 @@ class PrefixParser:
 
     def parse(self):
         expr = self._parse_node()
-        if self.i != len(self.tokens):
-            raise SyntaxError("Extra tokens after valid prefix expression")
+        while self.i < len(self.tokens):
+            expr = _make_mul(expr, self._parse_node())
         return expr
 
     def _next_token(self):
@@ -178,33 +274,16 @@ class PrefixParser:
         raise SyntaxError(f"Unrecognized token: {token}")
 
 
-# todo
-# Implement evaluation for Div in eval_ast, probably by multiplying numerator factors and dividing by the product of denominator factors.
-# Extend derivative handling once you know how you want division to interact symbolically.
-# Multiply by a Div: its numerator factors belong in the combined numerator, denominator factors in the combined denominator.
-# If both sides are divisions, the result is another division with merged numerators and denominators.
-# So “pulling Div from left/right” means recognizing when one operand is a fraction, unpacking it with
-# something like _split_div, and collapsing the result into a single Div
-# (or a simpler Mul if the denominator is empty). Whether you do that depends on how normalized you want the AST to be.
-
-# Write a helper like to_prefix(node) returning a list of tokens (strings or numbers). Start by matching on the node type.
-# For leaf nodes (Num, Var), return [str(value)] or [node.name].
-# For unary nodes (Neg, Func), return [op_name] + to_prefix(child). For Neg, use a dedicated keyword like neg.
-# For binary-ish nodes:
-# Add: operators are +; fold ["+"] + flatten(children) where each child contributes its own prefix sequence.
-# Mul: same with "*".
-# Div: use ["/"] + to_prefix for numerator factors first, then denominator; if you’re keeping them grouped, you can emit an auxiliary operator like "*" inside each group. Example:
-# ["/", *chain("+", ...? actually "*", etc.)].
-# Pow: return ["^"] + to_prefix(base) + to_prefix(exp).
-# Once you have token lists, join with spaces to get a readable string, e.g.:
-# def prefix_string(node):
-#     return " ".join(_prefix_tokens(node))
-
-# print(prefix_string(ast))
-
-
 def ast_to_prefix(node):
     def render(n):
+        def render_product(factors):
+            if not factors:
+                return "1"
+            if len(factors) == 1:
+                return render(factors[0])
+            parts = " ".join(render(f) for f in factors)
+            return f"(* {parts})"
+
         if isinstance(n, (Num, Var)):
             return str(n.value) if isinstance(n, Num) else n.name
         if isinstance(n, Neg):
@@ -215,12 +294,11 @@ def ast_to_prefix(node):
             parts = " ".join(render(term) for term in n.terms)
             return f"(+ {parts})"
         if isinstance(n, Mul):
-            parts = " ".join(render(factor) for factor in n.factors)
-            return f"(* {parts})"
+            return render_product(n.factors)
         if isinstance(n, Div):
-            num = " ".join(render(f) for f in n.num_factors)
-            den = " ".join(render(f) for f in n.denum_factors)
-            return f"(/ (* {num}) (* {den}))"
+            num = render_product(n.num_factors)
+            den = render_product(n.denum_factors)
+            return f"(/ {num} {den})"
         if isinstance(n, Pow):
             return f"(^ {render(n.base)} {render(n.exp)})"
         raise TypeError(f"Unsupported node: {n!r}")
@@ -255,6 +333,14 @@ def eval_ast(node, xval):
         for f in node.factors:
             v *= eval_ast(f, xval)
         return v
+    if isinstance(node, Div):
+        num = 1
+        for f in node.num_factors:
+            num *= eval_ast(f, xval)
+        denum = 1
+        for f in node.denum_factors:
+            denum *= eval_ast(f, xval)
+        return num / denum
     if isinstance(node, Pow):
         return eval_ast(node.base, xval) ** eval_ast(node.exp, xval)
     raise TypeError(f"Unknown node: {node}")
@@ -274,58 +360,273 @@ def derivative(node):
         terms = []
         for i, n in enumerate(node.factors):
             dfi = derivative(n)
-            if dfi is not Num(0):
-                rest_der = Mul(
-                    tuple([dfi] + [g for j, g in enumerate(node.factors) if j != i])
-                )
-                terms.append(rest_der)
+            if _is_zero(dfi):
+                continue
+            rest_factors = [dfi] + [g for j, g in enumerate(node.factors) if j != i]
+            rest_der = _make_mul_many(*rest_factors)
+            terms.append(rest_der)
         return Add(tuple(terms))
+
+    if isinstance(node, Div):
+        u_factors = node.num_factors
+        v_factors = node.denum_factors
+
+        #  we need to collapse factors back into single nodes, e.g carrying an empty value
+        # for a tuple factor, e.g. when _split_div returns empty denominator or numerator
+        def _collapse(factors):
+            if not factors:
+                return Num(1)
+            if len(factors) == 1:
+                return factors[0]
+            return Mul(factors)
+
+        u = _collapse(u_factors)
+        v = _collapse(v_factors)
+
+        # simplify a bit
+        if isinstance(v, Num) and v.value == 1:
+            return derivative(u)
+        if isinstance(u, Num) and u.value == 0:
+            return Num(0)
+        if isinstance(u, Num) and isinstance(v, Num):
+            return Num(0)
+        if isinstance(v, Num) and v.value == 0:
+            raise ZeroDivisionError("Division by zero in derivative")
+
+        du = derivative(u)
+        dv = derivative(v)
+        numerator = _make_add(_make_mul(du, v), _make_mul(Neg(dv), u))
+        denominator = Pow(v, Num(2))
+        return Div((numerator,), (denominator,))
 
     if isinstance(node, Pow):
         base, exp = node.base, node.exp
-        if (
-            isinstance(base, Var)
-            and isinstance(exp, Num)
-            and isinstance(exp.value, int)
-        ):
+        if isinstance(exp, Num):
             if exp.value == 0:
                 return Num(0)
-            return Mul((Num(exp.value), Pow(base, Num(exp.value - 1))))
+            base_der = derivative(base)
+            return _make_mul_many(
+                Num(exp.value), Pow(base, Num(exp.value - 1)), base_der
+            )
+        if isinstance(base, Num):
+            if base == Num(0):
+                return Num(0)
+            if base.value <= 0:
+                raise NotImplementedError(
+                    "Derivative for non-positive constant bases is not supported"
+                )
+            # [a ^ g(x) ]' = a ^ g(x) ⋅ ln(a) ⋅ g'(x)
+            return _make_mul_many(derivative(exp), Pow(base, exp), Func("ln", base))
+        # [u(x)]^v(x)]' = (v'(x) ⋅ ln(u(x)) + v(x) ⋅ (u'(x) / u(x)) ) ⋅ u(x)^v(x)
+        term1 = _make_mul(derivative(exp), Func("ln", base))
+        term2 = _make_mul(exp, _make_div(derivative(base), base))
+        return _make_mul(_make_add(term1, term2), Pow(base, exp))
+
     if isinstance(node, Func):
         name, child = node.name, node.child
         if name == "cos":
-            dfi = Mul(tuple([derivative(child), Neg(Func(name="sin", child=child))]))
-            return dfi
-        if name in ["sin", "cos"]:
-            dfi = Mul(tuple([derivative(child), Func(name=name, child=child)]))
+            return _make_mul_many(
+                derivative(child), Num(-1), Func(name="sin", child=child)
+            )
+        if name == "sin":
+            dfi = _make_mul(derivative(child), Func(name="cos", child=child))
             return dfi
         if name == "ln":
-            dfi = Mul(tuple([derivative(child), Func(name=name, child=child)]))
+            dfi = _make_div(derivative(child), child)
             return dfi
         if name == "exp":
-            dfi = Mul(tuple([derivative(child), Func(name="exp", child=child)]))
+            dfi = _make_mul(derivative(child), Func(name="exp", child=child))
+            return dfi
+        if name == "tan":
+            dfi = _make_mul(
+                derivative(child),
+                Pow(
+                    Func(name="cos", child=child),
+                    Num(-2),
+                ),
+            )
             return dfi
         else:
             raise NotImplementedError(
                 f"Derivative for function '{node.name}' is not implemented"
             )
-        # if (
-        #     isinstance(base, Var)
-        #     and isinstance(exp, Num)
-        #     and isinstance(exp.value, int)
-        # ):
-        #     if exp.value == 0:
-        #         return Num(0)
-        #     return Mul((Num(exp.value), Pow(base, Num(exp.value - 1))))
-    # if isinstance(node, Func):
-    # raise NotImplementedError(
-    # f"Derivative for function '{node.name}' is not implemented"
-    # )
     else:
-        raise NotImplementedError(f"Sorry, normal poly only, don't know {node}")
+        raise NotImplementedError(
+            f"Sorry, derivative for {node} not known or implemented"
+        )
 
 
-def differentiate(expr: str, val):
+def _simplify_number(value):
+    if isinstance(value, bool):
+        value = int(value)
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+def simplify(node):
+    if isinstance(node, (Num, Var)):
+        return node
+
+    if isinstance(node, Neg):
+        child = simplify(node.child)
+        result = Neg(child)
+        return _evaluate_if_numeric(result)
+
+    if isinstance(node, Func):
+        child = simplify(node.child)
+        result = Func(node.name, child)
+        return _evaluate_if_numeric(result)
+
+    if isinstance(node, Pow):
+        base = simplify(node.base)
+        exp = simplify(node.exp)
+        if isinstance(exp, Num):
+            if exp.value == 1:
+                return base
+            if exp.value == 0 and not (isinstance(base, Num) and base.value == 0):
+                return Num(1)
+        result = Pow(base, exp)
+        return _evaluate_if_numeric(result)
+
+    if isinstance(node, Add):
+        terms = []
+        const_total = 0
+        has_const = False
+        const_index = None
+
+        for term in node.terms:
+            simplified = simplify(term)
+            if isinstance(simplified, Add):
+                for sub_term in simplified.terms:
+                    if isinstance(sub_term, Num):
+                        const_total += sub_term.value
+                        has_const = True
+                        if const_index is None:
+                            const_index = len(terms)
+                    elif _is_zero(sub_term):
+                        continue
+                    else:
+                        terms.append(sub_term)
+                continue
+            if isinstance(simplified, Num):
+                const_total += simplified.value
+                has_const = True
+                if const_index is None:
+                    const_index = len(terms)
+                continue
+            if _is_zero(simplified):
+                continue
+            terms.append(simplified)
+
+        if has_const and (const_total != 0 or not terms):
+            insert_at = const_index if const_index is not None else len(terms)
+            terms.insert(insert_at, Num(_simplify_number(const_total)))
+
+        if not terms:
+            result = Num(0)
+        elif len(terms) == 1:
+            result = terms[0]
+        else:
+            result = Add(tuple(terms))
+        return _evaluate_if_numeric(result)
+
+    if isinstance(node, Mul):
+        factors = []
+        const_product = 1
+        has_const = False
+
+        for factor in node.factors:
+            simplified = simplify(factor)
+            if isinstance(simplified, Mul):
+                for sub_factor in simplified.factors:
+                    if _is_zero(sub_factor):
+                        return Num(0)
+                    if isinstance(sub_factor, Num):
+                        const_product *= sub_factor.value
+                        has_const = True
+                    elif _is_one(sub_factor):
+                        continue
+                    else:
+                        factors.append(sub_factor)
+                continue
+            if isinstance(simplified, Num):
+                if simplified.value == 0:
+                    return Num(0)
+                const_product *= simplified.value
+                has_const = True
+                continue
+            if _is_one(simplified):
+                continue
+            factors.append(simplified)
+
+        if has_const:
+            const_product = _simplify_number(const_product)
+            if const_product == 0:
+                return Num(0)
+            if const_product != 1 or not factors:
+                factors.insert(0, Num(const_product))
+
+        if not factors:
+            result = Num(1)
+        elif len(factors) == 1:
+            result = factors[0]
+        else:
+            result = Mul(tuple(factors))
+        return _evaluate_if_numeric(result)
+
+    if isinstance(node, Div):
+        num_factors = []
+        for factor in node.num_factors:
+            simplified = simplify(factor)
+            if _is_zero(simplified):
+                return Num(0)
+            num_factors.append(simplified)
+
+        den_factors = []
+        for factor in node.denum_factors:
+            simplified = simplify(factor)
+            if _is_zero(simplified):
+                raise ZeroDivisionError("Division by zero during simplification")
+            den_factors.append(simplified)
+
+        if len(num_factors) > 1:
+            num_factors = [f for f in num_factors if not _is_one(f)] or [Num(1)]
+        if len(den_factors) > 1:
+            den_factors = [f for f in den_factors if not _is_one(f)] or [Num(1)]
+        if len(den_factors) == 1 and _is_one(den_factors[0]):
+            den_factors = []
+
+        result = Div(tuple(num_factors), tuple(den_factors))
+        evaluated = _evaluate_if_numeric(result)
+
+        if isinstance(evaluated, Num):
+            return evaluated
+
+        if isinstance(evaluated, Div):
+            if not evaluated.denum_factors:
+                if not evaluated.num_factors:
+                    return Num(1)
+                if len(evaluated.num_factors) == 1:
+                    return evaluated.num_factors[0]
+                return simplify(Mul(evaluated.num_factors))
+            return evaluated
+
+        return simplify(evaluated)
+
+    raise TypeError(f"Unsupported node for simplification: {node!r}")
+
+
+def diff(expr: str):
+    tokens = tokenize(expr)
+    parser = PrefixParser(tokens)
+    ast = parser.parse()
+    ast_der = derivative(ast)
+    simplified = simplify(ast_der)
+    return ast_to_prefix(simplified)
+
+
+def diff_no_simplified(expr: str, val):
     tokens = tokenize(expr)
     parser = PrefixParser(tokens)
     ast = parser.parse()
@@ -335,22 +636,29 @@ def differentiate(expr: str, val):
 
 expressions = [
     "(+ x 2)",
+    "(^ x 2)",
     "(+ (* 1 x) (* 2 (+ x 1)))",
     "(cos (+ 1 x))",
+    "(cos (+ x 1))",
+    "(sin (+ x 1))",
     "(cos x)",
     "(^ x 2)",
-    # "(^ 1 (^ (+ (exp -1) (^ (- (* 0 x) x) 1)) 1))(* (+ x 3) 5)",
-    # "(/ 1 2)",
+    "(^ 1 (^ (+ (exp -1) (^ (- (* 0 x) x) 1)) 1))(* (+ x 3) 5)",
+    "(/ 1 2)",
+    "(/ x 2)",
+    "(ln x)",
+    "(+ (* 1 x) (* 2 (+ x 1)))",
+    "(* 2 -4)(ln (^ 0 (/ x (exp (/ (sin x) (* 2 -4))))))",
 ]
 
-for expr in expressions:
-    print(f"Parsing {expr}")
-    tokens = tokenize(expr)
-    parser = PrefixParser(tokens)
-    ast = parser.parse()
-    # print(f"Back at you, from AST {ast_to_prefix(ast)}")
-    print(f"Parsed Abstract syntax tree: {ast}")
-    der_ast = derivative(ast)
-    print(f"AST derivada es {der_ast}")
-    print(f"Back at you, derivative from AST {ast_to_prefix(der_ast)}")
-    # print(f"La derivadad: {der_ast}")
+if __name__ == "__main__":
+    for expr in expressions:
+        print(f"==> Funcio:  {expr}")
+        tokens = tokenize(expr)
+        parser = PrefixParser(tokens)
+        ast = parser.parse()
+        der_ast = derivative(ast)
+        print(f"Derivada sense simplificar :  {ast_to_prefix(der_ast)}")
+
+        diff_value = diff(expr)
+        print(f"Derivada: {diff_value} \n")
