@@ -652,17 +652,17 @@ expressions = [
     "(+ x 2)",
     "(^ x 2)",
     "(+ (* 1 x) (* 2 (+ x 1)))",
-    "(cos (+ 1 x))",
+    "(exp (cos (+ 1 x)))",
+    "(^ sin x (cos (+ 1 x)))",
     "(cos (+ x 1))",
     "(sin (+ x 1))",
-    "(cos x)",
-    "(^ x 2)",
-    "(^ 1 (^ (+ (exp -1) (^ (- (* 0 x) x) 1)) 1))(* (+ x 3) 5)",
+    "(* cos x ln x)",
+    "(* tan x ln x)",
     "(/ 1 2)",
+    # "(/ 1 sin x)",
     "(/ x 2)",
     "(ln x)",
     "(+ (* 1 x) (* 2 (+ x 1)))",
-    "(* 2 -4)(ln (^ 0 (/ x (exp (/ (sin x) (* 2 -4))))))",
 ]
 
 if __name__ == "__main__":
@@ -673,6 +673,7 @@ if __name__ == "__main__":
         ast = parser.parse()
         der_ast = derivative(ast)
         print(f"Derivada sense simplificar :  {ast_to_prefix(der_ast)}")
-
         diff_value = diff(expr)
-        print(f"Derivada: {diff_value} \n")
+        print(f"Derivada: {diff_value}")
+        print(f"Segona derivada {diff(diff_value)}")
+        print("------------------------")
