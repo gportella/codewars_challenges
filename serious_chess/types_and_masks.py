@@ -1,6 +1,8 @@
 from collections.abc import Mapping, Sequence
 from enum import Enum
+import math
 from typing import Dict, List, NewType, Protocol, TYPE_CHECKING
+import uuid
 
 if TYPE_CHECKING:
     from chess_engine import Board
@@ -13,6 +15,32 @@ NOT_FILE_A = U64(~FILE_A & U64_MASK)
 NOT_FILE_H = U64(~FILE_H & U64_MASK)
 
 FILES = "abcdefgh"
+
+
+def lsb(number: int) -> int:
+    """Return the least significant blocker index of the given number."""
+    if number == 0:
+        return -1  # Handle zero input (no set bits)
+    return int(math.log2(number & -number))
+
+
+def msb(number: int) -> int:
+    """Return the most significant blocker index of the given number."""
+    return number.bit_length() - 1
+
+
+def chebyshev_dist(sq1_index, sq2_index):
+    f1 = sq1_index % 8
+    r1 = sq1_index // 8
+    f2 = sq2_index % 8
+    r2 = sq2_index // 8
+
+    file_dist = abs(f1 - f2)
+    rank_dist = abs(r1 - r2)
+
+    distance = max(file_dist, rank_dist)
+
+    return distance
 
 
 class Pcs(Enum):
@@ -145,17 +173,66 @@ def generate_rook_rays() -> Dict[int, Dict[str, U64]]:
     return rays
 
 
-def generate_king_attack_bm(
+KING_ATTACK_PATTERNS = build_king_attack_patterns()
+ROOK_ATTACK_RAYS = generate_rook_rays()
+
+
+def generate_rook_attack_bm(
     board: "Board",
-    attack_patterns: Sequence[U64],
-    king_sq64: int,
+    sq64: int,
+    side: Color,
+    *,
+    debug: bool = False,
+) -> U64:
+    """Return rook attack bitboard pruned by friendly occupancy."""
+
+    rays = ROOK_ATTACK_RAYS[sq64]
+    friendly_occ = board.occupied[side]
+    legal_attacks = U64(0)
+
+    for direction in ["north", "south", "east", "west"]:
+        ray = rays[direction]
+        blockers = ray & friendly_occ
+        if blockers:
+            if direction in ["north", "east"]:
+                blocker_sq = lsb(int(blockers))
+            else:
+                blocker_sq = msb(int(blockers))
+            if direction == "north":
+                legal_attacks |= to_u64(ray & ((1 << blocker_sq) - 1))
+            elif direction == "south":
+                legal_attacks |= to_u64(ray & ~((1 << (blocker_sq + 1)) - 1))
+            elif direction == "east":
+                legal_attacks |= to_u64(ray & ((1 << blocker_sq) - 1))
+            elif direction == "west":
+                legal_attacks |= to_u64(ray & ~((1 << (blocker_sq + 1)) - 1))
+        else:
+            legal_attacks |= ray
+
+    if debug:
+        print_attack_mask(legal_attacks, pieces=board.pieces)
+
+    return legal_attacks
+
+
+def iter_bits(mask: int):
+    while mask:
+        lsb = mask & -mask  # isolate lowest set bit
+        idx = lsb.bit_length() - 1
+        yield idx
+        mask ^= lsb
+
+
+def generate_k_attack_bm(
+    board: "Board",
+    sq64: int,
     side: Color,
     *,
     debug: bool = False,
 ) -> U64:
     """Return king attack bitboard pruned by friendly occupancy."""
 
-    attacks = attack_patterns[king_sq64]
+    attacks = KING_ATTACK_PATTERNS[sq64]
     friendly_occ = board.occupied[side]
     legal_attacks = to_u64(attacks & ~friendly_occ)
 
@@ -163,6 +240,49 @@ def generate_king_attack_bm(
         print_attack_mask(legal_attacks, pieces=board.pieces)
 
     return legal_attacks
+
+
+attack_vectors = {
+    Pcs.k: generate_k_attack_bm,
+    Pcs.K: generate_k_attack_bm,
+    Pcs.R: generate_rook_attack_bm,
+    Pcs.r: generate_rook_attack_bm,
+}
+
+
+def is_check(board: "Board", side: Color, sq64: int) -> bool:
+    """Determine if the given side is in check."""
+    other_side = Color.white if side == Color.black else Color.black
+    own_bb = 1 << sq64
+
+    for piece_type in WHITE_PIECES if side == Color.black else BLACK_PIECES:
+        for attacker_sq in iter_bits(int(board.pieces_bb[other_side][piece_type])):
+            # print(f"Checking attacks from {piece_type} at {attacker_sq}")
+            if (attack_vector := attack_vectors.get(piece_type)) is not None:
+                if (attack_vector(board, attacker_sq, other_side) & own_bb) != 0:
+                    return True
+    return False
+
+
+def is_in_check(board: "Board", side: Color) -> bool:
+    """Determine if the given side is in check."""
+    return is_check(board, side, board.kings_pos[side.value])
+
+
+def generate_king_moves(board: "Board", side: Color) -> U64:
+    """Generate possible king moves from the given square on the board."""
+    # Placeholder implementation
+    target_positions = U64(0)
+    king_bb = generate_k_attack_bm(board, board.kings_pos[side.value], side)
+    for target_sq in iter_bits(int(king_bb)):
+        if not is_check(board, side, target_sq):
+            target_positions |= U64(1) << target_sq
+    return to_u64(target_positions)
+
+
+def intialise_hashkeys():
+    #  uuid.uuid1().int>>64)
+    ...
 
 
 if __name__ == "__main__":

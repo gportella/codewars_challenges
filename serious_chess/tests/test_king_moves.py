@@ -1,5 +1,4 @@
 import pytest
-
 import chess_engine as ce
 
 

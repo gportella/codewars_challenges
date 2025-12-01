@@ -7,7 +7,7 @@ Over the top, but seemed fun to do.
 
 from enum import IntEnum
 from dataclasses import dataclass, field
-from typing import List
+from typing import Dict, List
 
 from types_and_masks import (
     BLACK_PIECES,
@@ -17,9 +17,13 @@ from types_and_masks import (
     CastlingRights,
     Color,
     U64,
-    build_king_attack_patterns,
-    generate_king_attack_bm,
+    chebyshev_dist,
+    generate_k_attack_bm,
+    generate_king_moves,
+    generate_rook_attack_bm,
     generate_rook_rays,
+    is_in_check,
+    iter_bits,
     print_attack_mask,
     to_u64,
 )
@@ -35,6 +39,7 @@ CANONICAL_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 wE4_FEN = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1"
 RUY_LOPEZ_FEN = "r1bqkb1r/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4"
 ROOK_ENDGAME = "8/8/8/8/5R2/3k4/5K2/8 b - - 0 1"
+ROOK_ENDGAME_CHECK = "8/8/8/8/3k1R2/8/5K2/8 b - - 0 1"
 
 
 def fr2sq(f, r):
@@ -83,7 +88,11 @@ for rank in RANKS:
         SQ64_TO_SQ120[sq64] = sq120
 
 
-KING_ATTACK_PATTERNS = build_king_attack_patterns()
+def _empty_piece_bitboards() -> Dict[Color, Dict[Pcs, U64]]:
+    return {
+        Color.white: {piece: U64(0) for piece in WHITE_PIECES},
+        Color.black: {piece: U64(0) for piece in BLACK_PIECES},
+    }
 
 
 @dataclass
@@ -104,31 +113,13 @@ class Board:
     his_ply: int = 0
     castling_rights: CastlingRights = CastlingRights.No
     position_key: U64 = U64(0)
-    pawns: dict[Color, U64] = field(
-        default_factory=lambda: {
-            Color.white: U64(0),
-            Color.black: U64(0),
-            Color.both: U64(0),
-        }
+    pieces_bb: Dict[Color, Dict[Pcs, U64]] = field(
+        default_factory=_empty_piece_bitboards
     )
-    kings_bm: dict[Color, U64] = field(
-        default_factory=lambda: {
-            Color.white: U64(0),
-            Color.black: U64(0),
-            Color.both: U64(0),
-        }
-    )
-    kings_pos: list[int] = field(default_factory=lambda: [0] * 2)
+    kings_pos: List[int] = field(default_factory=lambda: [-1, -1])
     rooks_pos: list[int] = field(
-        default_factory=lambda: [0] * 4
+        default_factory=lambda: [-1] * 4
     )  # assume no promotions
-    rooks_bm: dict[Color, U64] = field(
-        default_factory=lambda: {
-            Color.white: U64(0),
-            Color.black: U64(0),
-            Color.both: U64(0),
-        }
-    )
     occupied: dict[Color, U64] = field(
         default_factory=lambda: {
             Color.white: U64(0),
@@ -209,70 +200,103 @@ def move(board: Board, from_sq: int, to_sq: int):
 
 def init_bitboards(board: Board):
     """Initialize bitboards for pawns and occupied squares"""
+    board.pieces_bb = _empty_piece_bitboards()
+    board.occupied = {
+        Color.white: U64(0),
+        Color.black: U64(0),
+        Color.both: U64(0),
+    }
+    board.kings_pos = [-1, -1]
+    board.rooks_pos = [-1] * 4
+
     for sq in range(BRD_SQ_NUM):
         piece = board.pieces[sq]
         sq64 = SQ120_TO_SQ64[sq]
         if sq64 == -1:
             continue
-        if piece == Pcs.P:
-            board.pawns[Color.white] = set_bit(board.pawns[Color.white], sq64)
-            board.pawns[Color.both] = set_bit(board.pawns[Color.both], sq64)
-        elif piece == Pcs.p:
-            board.pawns[Color.black] = set_bit(board.pawns[Color.black], sq64)
-            board.pawns[Color.both] = set_bit(board.pawns[Color.both], sq64)
+        if piece == Pcs.empty:
+            continue
+
+        if piece in WHITE_PIECES:
+            color = Color.white
+        elif piece in BLACK_PIECES:
+            color = Color.black
+        else:
+            continue
+
+        board.pieces_bb[color][piece] = set_bit(board.pieces_bb[color][piece], sq64)
+        board.occupied[Color.both] = set_bit(board.occupied[Color.both], sq64)
+        board.occupied[color] = set_bit(board.occupied[color], sq64)
+
         if piece == Pcs.K:
             board.kings_pos[Color.white.value] = sq64
-            board.kings_bm[Color.white] = set_bit(board.kings_bm[Color.white], sq64)
-            board.kings_bm[Color.both] = set_bit(board.kings_bm[Color.both], sq64)
         elif piece == Pcs.k:
             board.kings_pos[Color.black.value] = sq64
-            board.kings_bm[Color.black] = set_bit(board.kings_bm[Color.black], sq64)
-            board.kings_bm[Color.both] = set_bit(board.kings_bm[Color.both], sq64)
         elif piece == Pcs.R:
-            if board.rooks_pos[0] == 0:
+            if board.rooks_pos[0] == -1:
                 board.rooks_pos[0] = sq64
             else:
                 board.rooks_pos[1] = sq64
-            board.rooks_bm[Color.white] = set_bit(board.rooks_bm[Color.white], sq64)
-            board.rooks_bm[Color.both] = set_bit(board.rooks_bm[Color.both], sq64)
-        if piece != Pcs.empty:
-            board.occupied[Color.both] = set_bit(board.occupied[Color.both], sq64)
-        if piece in WHITE_PIECES:
-            board.occupied[Color.white] = set_bit(board.occupied[Color.white], sq64)
-        if piece in BLACK_PIECES:
-            board.occupied[Color.black] = set_bit(board.occupied[Color.black], sq64)
+        elif piece == Pcs.r:
+            if board.rooks_pos[2] == -1:
+                board.rooks_pos[2] = sq64
+            else:
+                board.rooks_pos[3] = sq64
     pass
 
 
 if __name__ == "__main__":
     # fen = parse_fen("8/8/2k5/8/4KP2/8/8/8 w - - 0 1")
-    fen = parse_fen(ROOK_ENDGAME)
+    # fen = parse_fen(ROOK_ENDGAME)
+    fen = parse_fen(ROOK_ENDGAME_CHECK)
     # fen = parse_fen(RUY_LOPEZ_FEN)
 
     board = Board(pieces=fen.pieces)
     print("The board\n")
     print_board(board)
     init_bitboards(board)
-    white_king_attack = generate_king_attack_bm(
+    white_king_attack = generate_k_attack_bm(
         board,
-        KING_ATTACK_PATTERNS,
         board.kings_pos[Color.white.value],
         Color.white,
     )
-    print("\nThe king attack! \n")
-    print_attack_mask(white_king_attack, pieces=board.pieces)
-
-    rook_rays = generate_rook_rays()
-
-    all_rook_rays = to_u64(
-        rook_rays[board.rooks_pos[Color.white.value]]["north"]
-        | rook_rays[board.rooks_pos[Color.white.value]]["south"]
-        | rook_rays[board.rooks_pos[Color.white.value]]["east"]
-        | rook_rays[board.rooks_pos[Color.white.value]]["west"]
+    black_king_attack = generate_k_attack_bm(
+        board,
+        board.kings_pos[Color.black.value],
+        Color.black,
     )
-    print("\nThe rook attack rays \n")
-    print_attack_mask(all_rook_rays, pieces=board.pieces)
+    print("\nThe white king attack! \n")
 
-    print("\nThe rook and king attack rays \n")
-    both_ray = to_u64(all_rook_rays | white_king_attack)
+    white_king_attack &= ~black_king_attack
+
+    print_attack_mask(to_u64(white_king_attack), pieces=board.pieces)
+    rook_attack_rays = generate_rook_rays()
+
+    white_rook_attack = generate_rook_attack_bm(
+        board=board,
+        sq64=board.rooks_pos[0],
+        side=Color.white,
+    )
+    print("\nThe white rook attack rays \n")
+    print_attack_mask(white_rook_attack, pieces=board.pieces)
+
+    is_in_check(board, Color.white)
+
+    print("\nThe white rook and king attack rays \n")
+    both_ray = to_u64(white_rook_attack | white_king_attack)
     print_attack_mask(both_ray, pieces=board.pieces)
+
+    print("\nIs white in check?", is_in_check(board, Color.white))
+    print("Is black in check?", is_in_check(board, Color.black))
+
+    print(f"\nPotential black king moves from {board.kings_pos[Color.black.value]}")
+    black_king_moves = generate_king_moves(board, Color.black)
+    print_attack_mask(black_king_moves, pieces=board.pieces)
+
+    black_sq = board.kings_pos[Color.black.value]
+    for piece_type in WHITE_PIECES:
+        for attacker_sq in iter_bits(int(board.pieces_bb[Color.white][piece_type])):
+            distance = chebyshev_dist(black_sq, attacker_sq)
+            print(
+                f"Distance from black king at {black_sq} to {piece_type} at {attacker_sq} is {distance}"
+            )
