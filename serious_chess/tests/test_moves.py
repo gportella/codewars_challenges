@@ -12,7 +12,7 @@ class TestKingMoveGeneration:
         ce.init_bitboards(board)
 
         mask = ce.generate_king_moves(board, ce.Color.white)
-        moves = {ce.SQ64_TO_SQ120[sq64] for sq64 in ce.iter_bits(int(mask))}
+        moves = {ce.Sqr(sq64) for sq64 in ce.iter_bits(int(mask))}
 
         expected_targets = {
             ce.Sqr["d5"],
@@ -34,7 +34,7 @@ class TestKingMoveGeneration:
         ce.init_bitboards(board)
 
         mask = ce.generate_king_moves(board, ce.Color.white)
-        moves = {ce.SQ64_TO_SQ120[sq64] for sq64 in ce.iter_bits(int(mask))}
+        moves = {ce.Sqr(sq64) for sq64 in ce.iter_bits(int(mask))}
 
         expected_targets = {ce.Sqr["a2"], ce.Sqr["b1"], ce.Sqr["b2"]}
         assert moves == expected_targets
@@ -49,9 +49,9 @@ class TestRookMoveGeneration:
         ce.init_bitboards(board)
 
         mask = ce.generate_rook_attack_bm(
-            board, ce.SQ120_TO_SQ64[rook_square], ce.Color.white
+            board, rook_square, ce.Color.white
         )
-        moves = {ce.SQ64_TO_SQ120[sq64] for sq64 in ce.iter_bits(int(mask))}
+        moves = {ce.Sqr(sq64) for sq64 in ce.iter_bits(int(mask))}
 
         expected_targets = {
             ce.Sqr["a2"],

@@ -111,15 +111,13 @@ def print_attack_mask(
 ) -> None:
     bb = int(mask)
     symbols = piece_symbols or PIECES_REP
-    for rank in range(8, 0, -1):
-        rank_idx = rank - 1
-        line = f"{rank} |"
+    for rank in range(7, -1, -1):
+        line = f"{rank + 1} |"
         for file_idx, _ in enumerate(FILES):
-            sq64 = rank_idx * 8 + file_idx
+            sq64 = rank * 8 + file_idx
             marker = " X " if (bb >> sq64) & 1 else " . "
             if pieces is not None:
-                sq120 = 21 + file_idx + 10 * rank_idx
-                piece = pieces[sq120]
+                piece = pieces[sq64]
                 if piece != Pcs.empty:
                     symbol = symbols.get(piece)
                     if symbol is not None:
@@ -192,22 +190,22 @@ def generate_rook_attack_bm(
 
     for direction in ["north", "south", "east", "west"]:
         ray = rays[direction]
-        blockers = ray & friendly_occ
+        blockers = int(ray) & int(friendly_occ)
         if blockers:
             if direction in ["north", "east"]:
                 blocker_sq = lsb(int(blockers))
             else:
                 blocker_sq = msb(int(blockers))
             if direction == "north":
-                legal_attacks |= to_u64(ray & ((1 << blocker_sq) - 1))
+                legal_attacks |= to_u64(int(ray) & ((1 << blocker_sq) - 1))
             elif direction == "south":
-                legal_attacks |= to_u64(ray & ~((1 << (blocker_sq + 1)) - 1))
+                legal_attacks |= to_u64(int(ray) & ~((1 << (blocker_sq + 1)) - 1))
             elif direction == "east":
-                legal_attacks |= to_u64(ray & ((1 << blocker_sq) - 1))
+                legal_attacks |= to_u64(int(ray) & ((1 << blocker_sq) - 1))
             elif direction == "west":
-                legal_attacks |= to_u64(ray & ~((1 << (blocker_sq + 1)) - 1))
+                legal_attacks |= to_u64(int(ray) & ~((1 << (blocker_sq + 1)) - 1))
         else:
-            legal_attacks |= ray
+            legal_attacks |= to_u64(int(ray))
 
     if debug:
         print_attack_mask(legal_attacks, pieces=board.pieces)
@@ -257,7 +255,6 @@ def is_check(board: "Board", side: Color, sq64: int) -> bool:
 
     for piece_type in WHITE_PIECES if side == Color.black else BLACK_PIECES:
         for attacker_sq in iter_bits(int(board.pieces_bb[other_side][piece_type])):
-            # print(f"Checking attacks from {piece_type} at {attacker_sq}")
             if (attack_vector := attack_vectors.get(piece_type)) is not None:
                 if (attack_vector(board, attacker_sq, other_side) & own_bb) != 0:
                     return True

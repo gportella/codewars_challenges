@@ -5,8 +5,8 @@ Doing it in python to pass some Katas in python, as they don't have a C/C++ vers
 Over the top, but seemed fun to do.
 """
 
-from enum import IntEnum
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import Dict, List
 
 from types_and_masks import (
@@ -21,7 +21,6 @@ from types_and_masks import (
     generate_k_attack_bm,
     generate_king_moves,
     generate_rook_attack_bm,
-    generate_rook_rays,
     is_in_check,
     iter_bits,
     print_attack_mask,
@@ -29,46 +28,17 @@ from types_and_masks import (
 )
 
 
-BRD_SQ_NUM = 120
+BRD_SQ_NUM = 64
 MAXMOVES_GAME = 2048
 FILES = "abcdefgh"
 RANKS = range(1, 9)
 
 
-CANONICAL_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-wE4_FEN = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1"
-RUY_LOPEZ_FEN = "r1bqkb1r/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4"
-ROOK_ENDGAME = "8/8/8/8/5R2/3k4/5K2/8 b - - 0 1"
-ROOK_ENDGAME_CHECK = "8/8/8/8/3k1R2/8/5K2/8 b - - 0 1"
+def fr2sq(file_idx: int, rank: int) -> int:
+    """Convert file (0-7) and rank (1-8, with 1 = rank1) to 0..63 index."""
 
+    return (rank - 1) * 8 + file_idx
 
-def fr2sq(f, r):
-    return 21 + f + 10 * (r - 1)
-
-
-attack_120_directions = {
-    Pcs.P: [11, 9],
-    Pcs.p: [-11, -9],
-    Pcs.N: [21, 19, 12, 8, -21, -19, -12, -8],
-    Pcs.n: [21, 19, 12, 8, -21, -19, -12, -8],
-    Pcs.B: [11, 9, -11, -9],
-    Pcs.b: [11, 9, -11, -9],
-    Pcs.R: [10, -10, 1, -1],
-    Pcs.r: [10, -10, 1, -1],
-    Pcs.K: [11, 10, 9, 1, -1, -9, -10, -11],
-    Pcs.k: [11, 10, 9, 1, -1, -9, -10, -11],
-    Pcs.Q: [11, 10, 9, 1, -1, -9, -10, -11],
-    Pcs.q: [11, 10, 9, 1, -1, -9, -10, -11],
-}
-
-
-_file_vals = {f"file_{file}": idx for idx, file in enumerate(FILES)}
-_file_vals["file_none"] = len(FILES)
-File = IntEnum("File", _file_vals)
-
-_rank_vals = {f"rank_{idx + 1}": idx for idx in range(len(RANKS))}
-_rank_vals["rank_none"] = len(RANKS)
-Rank = IntEnum("Rank", _rank_vals)
 
 _square_vals = {
     f"{file}{rank}": fr2sq(file_idx, rank)
@@ -78,14 +48,11 @@ _square_vals = {
 Sqr = IntEnum("Square", _square_vals)
 
 
-SQ120_TO_SQ64 = [-1] * BRD_SQ_NUM
-SQ64_TO_SQ120 = [-1] * 64
-for rank in RANKS:
-    for file_idx, file in enumerate(FILES):
-        sq120 = fr2sq(file_idx, rank)
-        sq64 = (rank - 1) * 8 + file_idx
-        SQ120_TO_SQ64[sq120] = sq64
-        SQ64_TO_SQ120[sq64] = sq120
+CANONICAL_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+wE4_FEN = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1"
+RUY_LOPEZ_FEN = "r1bqkb1r/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4"
+ROOK_ENDGAME = "8/8/8/8/5R2/3k4/5K2/8 b - - 0 1"
+ROOK_ENDGAME_CHECK = "8/8/8/8/3k1R2/8/5K2/8 b - - 0 1"
 
 
 def _empty_piece_bitboards() -> Dict[Color, Dict[Pcs, U64]]:
@@ -211,9 +178,6 @@ def init_bitboards(board: Board):
 
     for sq in range(BRD_SQ_NUM):
         piece = board.pieces[sq]
-        sq64 = SQ120_TO_SQ64[sq]
-        if sq64 == -1:
-            continue
         if piece == Pcs.empty:
             continue
 
@@ -224,24 +188,24 @@ def init_bitboards(board: Board):
         else:
             continue
 
-        board.pieces_bb[color][piece] = set_bit(board.pieces_bb[color][piece], sq64)
-        board.occupied[Color.both] = set_bit(board.occupied[Color.both], sq64)
-        board.occupied[color] = set_bit(board.occupied[color], sq64)
+        board.pieces_bb[color][piece] = set_bit(board.pieces_bb[color][piece], sq)
+        board.occupied[Color.both] = set_bit(board.occupied[Color.both], sq)
+        board.occupied[color] = set_bit(board.occupied[color], sq)
 
         if piece == Pcs.K:
-            board.kings_pos[Color.white.value] = sq64
+            board.kings_pos[Color.white.value] = sq
         elif piece == Pcs.k:
-            board.kings_pos[Color.black.value] = sq64
+            board.kings_pos[Color.black.value] = sq
         elif piece == Pcs.R:
             if board.rooks_pos[0] == -1:
-                board.rooks_pos[0] = sq64
+                board.rooks_pos[0] = sq
             else:
-                board.rooks_pos[1] = sq64
+                board.rooks_pos[1] = sq
         elif piece == Pcs.r:
             if board.rooks_pos[2] == -1:
-                board.rooks_pos[2] = sq64
+                board.rooks_pos[2] = sq
             else:
-                board.rooks_pos[3] = sq64
+                board.rooks_pos[3] = sq
     pass
 
 
@@ -267,10 +231,10 @@ if __name__ == "__main__":
     )
     print("\nThe white king attack! \n")
 
-    white_king_attack &= ~black_king_attack
+    white_king_mask = int(white_king_attack) & ~int(black_king_attack)
+    white_king_attack = to_u64(white_king_mask)
 
-    print_attack_mask(to_u64(white_king_attack), pieces=board.pieces)
-    rook_attack_rays = generate_rook_rays()
+    print_attack_mask(white_king_attack, pieces=board.pieces)
 
     white_rook_attack = generate_rook_attack_bm(
         board=board,
@@ -283,7 +247,7 @@ if __name__ == "__main__":
     is_in_check(board, Color.white)
 
     print("\nThe white rook and king attack rays \n")
-    both_ray = to_u64(white_rook_attack | white_king_attack)
+    both_ray = to_u64(int(white_rook_attack) | int(white_king_attack))
     print_attack_mask(both_ray, pieces=board.pieces)
 
     print("\nIs white in check?", is_in_check(board, Color.white))
