@@ -268,7 +268,6 @@ def is_in_check(board: "Board", side: Color) -> bool:
 
 def generate_king_moves(board: "Board", side: Color) -> U64:
     """Generate possible king moves from the given square on the board."""
-    # Placeholder implementation
     target_positions = U64(0)
     king_bb = generate_k_attack_bm(board, board.kings_pos[side.value], side)
     for target_sq in iter_bits(int(king_bb)):
