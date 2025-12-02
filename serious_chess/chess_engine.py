@@ -7,8 +7,10 @@ Over the top, but seemed fun to do.
 
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Dict, List
+from collections import deque
+from typing import Deque, Dict, List, Optional, Tuple
 
+from render_board import show_fancy_board
 from types_and_masks import (
     BLACK_PIECES,
     PIECES_REP,
@@ -18,17 +20,20 @@ from types_and_masks import (
     Color,
     U64,
     chebyshev_dist,
+    compute_position_key,
     generate_k_attack_bm,
     generate_king_moves,
+    generate_next_move,
     generate_rook_attack_bm,
     is_in_check,
     iter_bits,
+    minimax,
     print_attack_mask,
     to_u64,
+    BRD_SQ_NUM,
 )
 
 
-BRD_SQ_NUM = 64
 MAXMOVES_GAME = 2048
 FILES = "abcdefgh"
 RANKS = range(1, 9)
@@ -38,6 +43,14 @@ def fr2sq(file_idx: int, rank: int) -> int:
     """Convert file (0-7) and rank (1-8, with 1 = rank1) to 0..63 index."""
 
     return (rank - 1) * 8 + file_idx
+
+
+def sq2coord(square: int) -> str:
+    """Convert 0..63 index to algebraic coordinate like 'e4'."""
+
+    file_idx = square % 8
+    rank = square // 8 + 1
+    return f"{FILES[file_idx]}{rank}"
 
 
 _square_vals = {
@@ -64,10 +77,24 @@ def _empty_piece_bitboards() -> Dict[Color, Dict[Pcs, U64]]:
 
 @dataclass
 class Undo:
-    move: int
+    move: Tuple[int, int] = (-1, -1)
     calstlng_rights: CastlingRights = CastlingRights.No
     en_passant: int = -1
     position_key: U64 = U64(0)
+    moved_piece: Pcs = Pcs.empty
+    captured_piece: Pcs = Pcs.empty
+    mover_bb: U64 = U64(0)
+    captured_bb: Optional[U64] = None
+    side: Color = Color.white
+    fifty_move: int = 0
+    ply: int = 0
+    his_ply: int = 0
+    occupied_white: U64 = U64(0)
+    occupied_black: U64 = U64(0)
+    occupied_both: U64 = U64(0)
+    kings_pos: Tuple[int, int] = (-1, -1)
+    rooks_pos: Tuple[int, int, int, int] = (-1, -1, -1, -1)
+    king_captured: Optional[Color] = None
 
 
 @dataclass
@@ -86,7 +113,7 @@ class Board:
     kings_pos: List[int] = field(default_factory=lambda: [-1, -1])
     rooks_pos: list[int] = field(
         default_factory=lambda: [-1] * 4
-    )  # assume no promotions
+    )  # assume no promotions for now
     occupied: dict[Color, U64] = field(
         default_factory=lambda: {
             Color.white: U64(0),
@@ -94,7 +121,197 @@ class Board:
             Color.both: U64(0),
         }
     )  # also kept as a masked 64-bit
-    history: List[Undo] = field(default_factory=list)
+    history: Deque[U64] = field(default_factory=deque)
+    king_captured: Optional[Color] = None
+
+    def __post_init__(self):
+        self.position_key = compute_position_key(self)
+        self.history.append(self.position_key)
+
+    def to_fen(self):
+        fen_parts = []
+        for rank in range(8, 0, -1):
+            line = ""
+            empty_count = 0
+            for file in FILES:
+                sq = fr2sq(FILES.index(file), rank)
+                piece = self.pieces[sq]
+                if piece == Pcs.empty:
+                    empty_count += 1
+                else:
+                    if empty_count > 0:
+                        line += str(empty_count)
+                        empty_count = 0
+                    line += piece.name
+            if empty_count > 0:
+                line += str(empty_count)
+            if rank > 1:
+                line += "/"
+            fen_parts.append(line)
+        fen_parts = ["".join(fen_parts)]
+        fen_parts.append("w" if self.side == Color.white else "b")
+        fen_parts.append(self.castling_rights.to_fen_str())
+        fen_parts.append(sq2coord(self.en_passant) if self.en_passant != -1 else "-")
+        fen_parts.append(str(self.fifty_move))
+        fen_parts.append(str(self.his_ply // 2 + 1))
+
+        return " ".join(fen_parts)
+
+    def is_terminal(self) -> bool:
+        if self.king_captured is not None:
+            return True
+
+        moves = generate_king_moves(self, self.side)
+        if int(moves) == 0:
+            return True
+
+        return False
+
+    def make_move(self, from_sq: int, to_sq: int) -> Undo:
+        moved_piece = self.pieces[from_sq]
+        captured_piece = self.pieces[to_sq]
+        mover_color = Color.white if moved_piece in WHITE_PIECES else Color.black
+        opponent = Color.white if mover_color == Color.black else Color.black
+        captured_color: Optional[Color] = None
+        if captured_piece != Pcs.empty:
+            captured_color = (
+                Color.white if captured_piece in WHITE_PIECES else Color.black
+            )
+
+        undo = Undo(
+            move=(from_sq, to_sq),
+            calstlng_rights=self.castling_rights,
+            en_passant=self.en_passant,
+            position_key=self.position_key,
+            moved_piece=moved_piece,
+            captured_piece=captured_piece,
+            mover_bb=self.pieces_bb[mover_color][moved_piece],
+            captured_bb=(
+                self.pieces_bb[captured_color][captured_piece]
+                if captured_color is not None
+                else None
+            ),
+            side=mover_color,
+            fifty_move=self.fifty_move,
+            ply=self.ply,
+            his_ply=self.his_ply,
+            occupied_white=self.occupied[Color.white],
+            occupied_black=self.occupied[Color.black],
+            occupied_both=self.occupied[Color.both],
+            kings_pos=(self.kings_pos[0], self.kings_pos[1]),
+            rooks_pos=(
+                self.rooks_pos[0],
+                self.rooks_pos[1],
+                self.rooks_pos[2],
+                self.rooks_pos[3],
+            ),
+            king_captured=self.king_captured,
+        )
+
+        self.pieces[to_sq] = moved_piece
+        self.pieces[from_sq] = Pcs.empty
+
+        mover_bb = clear_bit(self.pieces_bb[mover_color][moved_piece], from_sq)
+        mover_bb = set_bit(mover_bb, to_sq)
+        self.pieces_bb[mover_color][moved_piece] = mover_bb
+
+        if captured_color is not None:
+            captured_bb = clear_bit(
+                self.pieces_bb[captured_color][captured_piece], to_sq
+            )
+            self.pieces_bb[captured_color][captured_piece] = captured_bb
+
+        self.occupied[mover_color] = set_bit(
+            clear_bit(self.occupied[mover_color], from_sq),
+            to_sq,
+        )
+        self.occupied[Color.both] = set_bit(
+            clear_bit(self.occupied[Color.both], from_sq),
+            to_sq,
+        )
+        if captured_color is not None:
+            self.occupied[captured_color] = clear_bit(
+                self.occupied[captured_color], to_sq
+            )
+
+        if moved_piece == Pcs.K:
+            self.kings_pos[Color.white.value] = to_sq
+        elif moved_piece == Pcs.k:
+            self.kings_pos[Color.black.value] = to_sq
+
+        if captured_piece == Pcs.K:
+            self.king_captured = Color.white
+        elif captured_piece == Pcs.k:
+            self.king_captured = Color.black
+
+        if moved_piece == Pcs.R:
+            for idx in range(0, 2):
+                if self.rooks_pos[idx] == from_sq:
+                    self.rooks_pos[idx] = to_sq
+                    break
+        elif moved_piece == Pcs.r:
+            for idx in range(2, 4):
+                if self.rooks_pos[idx] == from_sq:
+                    self.rooks_pos[idx] = to_sq
+                    break
+
+        if captured_piece == Pcs.R:
+            for idx in range(0, 2):
+                if self.rooks_pos[idx] == to_sq:
+                    self.rooks_pos[idx] = -1
+                    break
+        elif captured_piece == Pcs.r:
+            for idx in range(2, 4):
+                if self.rooks_pos[idx] == to_sq:
+                    self.rooks_pos[idx] = -1
+                    break
+
+        if moved_piece in (Pcs.P, Pcs.p) or captured_piece != Pcs.empty:
+            self.fifty_move = 0
+        else:
+            self.fifty_move += 1
+
+        self.ply += 1
+        self.his_ply += 1
+
+        self.en_passant = -1
+
+        self.side = opponent
+
+        self.position_key = compute_position_key(self)
+        self.history.append(self.position_key)
+
+        return undo
+
+    def undo_move(self, undo: Undo):
+        from_sq, to_sq = undo.move
+        opponent = Color.white if undo.side == Color.black else Color.black
+
+        if self.history:
+            self.history.pop()
+
+        self.side = undo.side
+        self.castling_rights = undo.calstlng_rights
+        self.en_passant = undo.en_passant
+        self.position_key = undo.position_key
+        self.fifty_move = undo.fifty_move
+        self.ply = undo.ply
+        self.his_ply = undo.his_ply
+
+        self.pieces[from_sq] = undo.moved_piece
+        self.pieces[to_sq] = undo.captured_piece
+
+        self.pieces_bb[self.side][undo.moved_piece] = undo.mover_bb
+        if undo.captured_piece != Pcs.empty and undo.captured_bb is not None:
+            self.pieces_bb[opponent][undo.captured_piece] = undo.captured_bb
+
+        self.occupied[Color.white] = undo.occupied_white
+        self.occupied[Color.black] = undo.occupied_black
+        self.occupied[Color.both] = undo.occupied_both
+
+        self.kings_pos = [undo.kings_pos[0], undo.kings_pos[1]]
+        self.rooks_pos = list(undo.rooks_pos)
+        self.king_captured = undo.king_captured
 
 
 def set_bit(bb: U64, sq64: int) -> U64:
@@ -159,10 +376,10 @@ def print_board(board: Board):
     print("    a  b  c  d  e  f  g  h")
 
 
-def move(board: Board, from_sq: int, to_sq: int):
-    piece = board.pieces[from_sq]
-    board.pieces[to_sq] = piece
-    board.pieces[from_sq] = Pcs.empty
+# def move(board: Board, from_sq: int, to_sq: int):
+#     piece = board.pieces[from_sq]
+#     board.pieces[to_sq] = piece
+#     board.pieces[from_sq] = Pcs.empty
 
 
 def init_bitboards(board: Board):
@@ -206,7 +423,8 @@ def init_bitboards(board: Board):
                 board.rooks_pos[2] = sq
             else:
                 board.rooks_pos[3] = sq
-    pass
+    board.position_key = compute_position_key(board)
+    board.history = deque([board.position_key])
 
 
 if __name__ == "__main__":
@@ -244,23 +462,41 @@ if __name__ == "__main__":
     print("\nThe white rook attack rays \n")
     print_attack_mask(white_rook_attack, pieces=board.pieces)
 
-    is_in_check(board, Color.white)
+    current_side = Color.black
+    game_moves = 0
+    while board.king_captured is None:
+        game_moves += 1
+        print(f"\nMove {game_moves}, {current_side.name} to move")
+        move = generate_next_move(board, current_side)
+        if move is None:
+            print("No move found, game over.")
+            break
+        board.make_move(*move)
+        show_fancy_board(board.to_fen(), size=400)
+        current_side = Color.black if current_side == Color.white else Color.white
+    # generate_next_move(board, Color.white)
 
-    print("\nThe white rook and king attack rays \n")
-    both_ray = to_u64(int(white_rook_attack) | int(white_king_attack))
-    print_attack_mask(both_ray, pieces=board.pieces)
+    # minimax_score, best_move = minimax(
+    #     board, depth=3, side_to_move=Color.white, alpha=-99999, beta=99999
+    # )
+    # print(f"\nMinimax evaluation score for white: {minimax_score} for move {best_move}")
 
-    print("\nIs white in check?", is_in_check(board, Color.white))
-    print("Is black in check?", is_in_check(board, Color.black))
+    # print("\nThe white rook and king attack rays \n")
+    # both_ray = to_u64(int(white_rook_attack) | int(white_king_attack))
+    # print_attack_mask(both_ray, pieces=board.pieces)
 
-    print(f"\nPotential black king moves from {board.kings_pos[Color.black.value]}")
-    black_king_moves = generate_king_moves(board, Color.black)
-    print_attack_mask(black_king_moves, pieces=board.pieces)
+    # print("\nIs white in check?", is_in_check(board, Color.white))
+    # print("Is black in check?", is_in_check(board, Color.black))
 
-    black_sq = board.kings_pos[Color.black.value]
-    for piece_type in WHITE_PIECES:
-        for attacker_sq in iter_bits(int(board.pieces_bb[Color.white][piece_type])):
-            distance = chebyshev_dist(black_sq, attacker_sq)
-            print(
-                f"Distance from black king at {black_sq} to {piece_type} at {attacker_sq} is {distance}"
-            )
+    # print(f"\nPotential black king moves from {board.kings_pos[Color.black.value]}")
+    # black_king_moves = generate_king_moves(board, Color.black)
+    # print_attack_mask(black_king_moves, pieces=board.pieces)
+
+    # # show_fancy_board(our_fen, attacks=black_king_moves, size=400)
+    # black_sq = board.kings_pos[Color.black.value]
+    # for piece_type in WHITE_PIECES:
+    #     for attacker_sq in iter_bits(int(board.pieces_bb[Color.white][piece_type])):
+    #         distance = chebyshev_dist(black_sq, attacker_sq)
+    #         print(
+    #             f"Distance from black king at {black_sq} to {piece_type} at {attacker_sq} is {distance}"
+    #         )

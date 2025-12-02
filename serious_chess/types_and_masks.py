@@ -1,7 +1,9 @@
 from collections.abc import Mapping, Sequence
+import copy
 from enum import Enum
 import math
-from typing import Dict, List, NewType, Protocol, TYPE_CHECKING
+import random
+from typing import Dict, List, NewType, Optional, Protocol, TYPE_CHECKING, Tuple
 import uuid
 
 if TYPE_CHECKING:
@@ -15,6 +17,7 @@ NOT_FILE_A = U64(~FILE_A & U64_MASK)
 NOT_FILE_H = U64(~FILE_H & U64_MASK)
 
 FILES = "abcdefgh"
+BRD_SQ_NUM = 64
 
 
 def lsb(number: int) -> int:
@@ -26,6 +29,7 @@ def lsb(number: int) -> int:
 
 def msb(number: int) -> int:
     """Return the most significant blocker index of the given number."""
+    assert number != 0
     return number.bit_length() - 1
 
 
@@ -74,6 +78,21 @@ PIECES_REP: Dict[Pcs, str] = {
     Pcs.K: "♔",
 }
 
+PIECES_VALUES = {
+    Pcs.P: 100,
+    Pcs.N: 320,
+    Pcs.B: 330,
+    Pcs.R: 500,
+    Pcs.Q: 900,
+    Pcs.K: 20000,
+    Pcs.p: -100,
+    Pcs.n: -320,
+    Pcs.b: -330,
+    Pcs.r: -500,
+    Pcs.q: -900,
+    Pcs.k: -20000,
+}
+
 
 class Color(Enum):
     white = 0
@@ -88,9 +107,46 @@ class CastlingRights(Enum):
     BKCA = 4
     BQCA = 8
 
+    def to_fen_str(self) -> str:
+        rights = []
+        if self.value & CastlingRights.WKCA.value:
+            rights.append("K")
+        if self.value & CastlingRights.WQCA.value:
+            rights.append("Q")
+        if self.value & CastlingRights.BKCA.value:
+            rights.append("k")
+        if self.value & CastlingRights.BQCA.value:
+            rights.append("q")
+        return "".join(rights) if rights else "-"
+
 
 WHITE_PIECES = frozenset({Pcs.P, Pcs.N, Pcs.B, Pcs.R, Pcs.Q, Pcs.K})
 BLACK_PIECES = frozenset({Pcs.p, Pcs.n, Pcs.b, Pcs.r, Pcs.q, Pcs.k})
+
+
+def __init_zobrist_keys() -> Dict[object, int]:
+    keys: Dict[object, int] = {}
+    for sq in range(BRD_SQ_NUM):
+        for piece in Pcs:
+            if piece == Pcs.empty:
+                continue
+            keys[(sq, piece)] = random.getrandbits(64)
+    keys["side"] = random.getrandbits(64)
+    return keys
+
+
+ZOBRIST_KEYS = __init_zobrist_keys()
+
+
+def compute_position_key(board: "Board") -> U64:
+    key = 0
+    for sq in range(BRD_SQ_NUM):
+        piece = board.pieces[sq]
+        if piece != Pcs.empty:
+            key ^= ZOBRIST_KEYS[(sq, piece)]
+    if board.side == Color.black:
+        key ^= ZOBRIST_KEYS["side"]
+    return to_u64(key)
 
 
 def to_u64(value: int) -> U64:
@@ -185,12 +241,12 @@ def generate_rook_attack_bm(
     """Return rook attack bitboard pruned by friendly occupancy."""
 
     rays = ROOK_ATTACK_RAYS[sq64]
-    friendly_occ = board.occupied[side]
+    target_occ = board.occupied[Color.white if side == Color.black else Color.black]
     legal_attacks = U64(0)
 
     for direction in ["north", "south", "east", "west"]:
         ray = rays[direction]
-        blockers = int(ray) & int(friendly_occ)
+        blockers = to_u64(int(ray) & int(board.occupied[Color.both]))
         if blockers:
             if direction in ["north", "east"]:
                 blocker_sq = lsb(int(blockers))
@@ -198,14 +254,19 @@ def generate_rook_attack_bm(
                 blocker_sq = msb(int(blockers))
             if direction == "north":
                 legal_attacks |= to_u64(int(ray) & ((1 << blocker_sq) - 1))
+                legal_attacks |= to_u64(1 << blocker_sq) & target_occ
             elif direction == "south":
                 legal_attacks |= to_u64(int(ray) & ~((1 << (blocker_sq + 1)) - 1))
+                legal_attacks |= to_u64(1 << blocker_sq) & target_occ
             elif direction == "east":
                 legal_attacks |= to_u64(int(ray) & ((1 << blocker_sq) - 1))
+                legal_attacks |= to_u64(1 << blocker_sq) & target_occ
             elif direction == "west":
                 legal_attacks |= to_u64(int(ray) & ~((1 << (blocker_sq + 1)) - 1))
+                legal_attacks |= to_u64(1 << blocker_sq) & target_occ
         else:
             legal_attacks |= to_u64(int(ray))
+        # legal_attacks |= to_u64(targets)
 
     if debug:
         print_attack_mask(legal_attacks, pieces=board.pieces)
@@ -276,9 +337,123 @@ def generate_king_moves(board: "Board", side: Color) -> U64:
     return to_u64(target_positions)
 
 
-def intialise_hashkeys():
-    #  uuid.uuid1().int>>64)
-    ...
+def evaluate_board_material(board: "Board") -> int:
+    """Evaluate the board position and return a score."""
+    score = 0
+    for sq in range(64):
+        piece = board.pieces[sq]
+        score += PIECES_VALUES.get(piece, 0)
+    return score
+
+
+def is_checkmate(board: "Board", side: Color) -> bool:
+    """Determine if the given side is in checkmate."""
+    if not is_in_check(board, side):
+        return False
+
+    king_moves = generate_king_moves(board, side)
+    if king_moves != 0:
+        return False
+    return True
+
+
+def evaluate_board(board: "Board") -> int:
+    """Evaluate a move and return a score.
+
+    Absolutely not:
+        - can not move into check
+    Positives:
+        - check // checkmate
+    """
+
+    # show_fancy_board(board.to_fen(), size=300)
+    score_move = 0
+    for side in [Color.white, Color.black]:
+        if is_in_check(board, side):
+            score_move -= 10000
+        elif is_in_check(board, Color.white if side == Color.black else Color.black):
+            score_move += 5000
+    score_move += evaluate_board_material(board)
+    rook_mobility_score = mobility(board, Color.white, Pcs.R)
+    king_mobility_score = mobility(board, Color.white, Pcs.K) - mobility(
+        board, Color.black, Pcs.K
+    )
+    score_move += rook_mobility_score * 10
+    score_move -= king_mobility_score * 10
+    chebyshev_distance = chebyshev_dist(
+        board.kings_pos[Color.white.value], board.kings_pos[Color.black.value]
+    )
+    score_move += (14 - chebyshev_distance) * 20
+    return score_move
+
+
+def mobility(board: "Board", side: Color, piece_type: Pcs) -> int:
+    actual_piece = piece_type
+    if side == Color.white and piece_type in BLACK_PIECES:
+        actual_piece = Pcs(piece_type.value - 6)
+    elif side == Color.black and piece_type in WHITE_PIECES:
+        actual_piece = Pcs(piece_type.value + 6)
+
+    attack_fn = attack_vectors.get(actual_piece)
+    if attack_fn is None:
+        return 0
+
+    moves = 0
+    for from_sq in iter_bits(int(board.pieces_bb[side][actual_piece])):
+        attack_bm = attack_fn(board, from_sq, side)
+        moves += bin(int(attack_bm)).count("1")
+    return moves
+
+
+def generate_legal_moves(board: "Board", side: Color):
+    # this could be improved as we know what pieces we do have
+    for piece_type in WHITE_PIECES if side == Color.white else BLACK_PIECES:
+        for from_sq in iter_bits(int(board.pieces_bb[side][piece_type])):
+            attack_bm = attack_vectors[piece_type](board, from_sq, side)
+            for to_sq in iter_bits(int(attack_bm)):
+                yield (from_sq, to_sq)
+
+
+def minimax(board, depth, side_to_move, alpha, beta):
+    if depth == 0 or board.is_terminal():
+        return evaluate_board(board), None
+
+    best_score = -math.inf if side_to_move == Color.white else math.inf
+    best_move = None
+
+    for move in generate_legal_moves(board, side_to_move):
+        opposite_side = Color.white if side_to_move == Color.black else Color.black
+        undo = board.make_move(*move)  # mutate board, remember undo info
+        if board.history.count(board.position_key) > 3:
+            score = 0  # draw by repetition
+            board.undo_move(undo)
+            continue
+        score, _ = minimax(board, depth - 1, opposite_side, alpha, beta)
+        board.undo_move(undo)
+
+        if side_to_move == Color.white:  # maximizing node
+            if score > best_score:
+                best_score = score
+                best_move = move
+            alpha = max(alpha, best_score)
+        else:  # minimizing node
+            if score < best_score:
+                best_score = score
+                best_move = move
+            beta = min(beta, best_score)
+
+        if beta <= alpha:  # alpha-beta cutoff
+            break
+
+    return best_score, best_move
+
+
+def generate_next_move(board: "Board", side: Color) -> Optional[Tuple[int, int]]:
+    """Generate the next best move for the given side using minimax."""
+    depth = 6  # Set search depth
+    _, best_move = minimax(board, depth, side, -math.inf, math.inf)
+    print(f"Best move for {side.name}: {best_move}")
+    return best_move
 
 
 if __name__ == "__main__":
