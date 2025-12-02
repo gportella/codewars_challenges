@@ -121,6 +121,39 @@ class TestArithmeticOperations:
         assert assembler_interpreter(program) == -1
 
 
+class TestBitShiftOperations:
+    def test_shl_with_default_and_literal_amount(self):
+        program = textwrap.dedent(
+            """
+            mov a, 3
+            shl a
+            shl a, 2
+            end
+            """
+        ).strip()
+
+        ctx = execute_program(program)
+
+        assert ctx.registers.show() == {"a": 24}
+        assert assembler_interpreter(program) == ""
+
+    def test_shr_with_register_amount_preserves_sign(self):
+        program = textwrap.dedent(
+            """
+            mov a, -8
+            mov b, 1
+            shr a, b
+            shr a
+            end
+            """
+        ).strip()
+
+        ctx = execute_program(program)
+
+        assert ctx.registers.show() == {"a": -2, "b": 1}
+        assert assembler_interpreter(program) == ""
+
+
 class TestConditionalLogic:
     def test_jnz_with_loop_decrements_to_zero(self):
         program = [

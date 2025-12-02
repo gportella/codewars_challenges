@@ -17,6 +17,8 @@ We want to create an interpreter of assembler which will support the following i
 - `sub x, y`: subtract y (either an integer or the value of a register) from register x and store the result in x (i.e. register[x] -= y).
 - `mul x, y`: multiply register x by y (either an integer or the value of a register) and store the result in x (i.e. register[x] *= y).
 - `div x, y`: divide register x by y using integer division (i.e. register[x] /= y).
+- `shl x[, y]`: shift register `x` left by one when `y` is omitted, or by `y` (integer/register) positions.
+- `shr x[, y]`: arithmetic right shift of register `x` by one when `y` is omitted, or by `y` (integer/register) positions.
 - `label:`: define a label position (`label` = identifier + ":", an identifier being a string that does not match any other command). Jump commands and `call` target these label positions in the program.
 - `jmp lbl`: jump to the label `lbl`.
 - `cmp x, y`: compare x (either an integer or the value of a register) and y (either an integer or the value of a register). The result is used in the conditional jumps (`jne`, `je`, `jge`, `jg`, `jle`, `jl`).

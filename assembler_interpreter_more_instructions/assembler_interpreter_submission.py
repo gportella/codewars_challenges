@@ -237,33 +237,6 @@ class jnz(Instruction):
         ctx.ip += self.step if value != 0 else 1
 
 
-@dataclass(frozen=True)
-class ShiftInstruction(Instruction):
-    """Shift register value left or right by an optional amount"""
-
-    reg: str
-    amount: Union[int, str] = 1
-    direction: str = "left"
-
-    def exe(self, ctx: ExecutionContext):
-        raw_shift = (
-            ctx.registers.read_signed(self.amount)
-            if isinstance(self.amount, str)
-            else self.amount
-        )
-        if raw_shift < 0:
-            raise ValueError("Shift amount must be non-negative")
-
-        value = ctx.registers.read_signed(self.reg)
-        if self.direction == "left":
-            shifted = value << raw_shift
-        else:
-            shifted = value >> raw_shift
-
-        ctx.registers.write(self.reg, shifted)
-        ctx.ip += 1
-
-
 def strip_comments(line: str) -> str:
     cleaned = line
     for marker in (";", "#"):
@@ -364,15 +337,6 @@ def parse_instruction(line: str) -> Optional[Instruction]:
         return dec(parts[1])
     if op == "put" and len(parts) == 2:
         return put(parts[1])
-    if op in {"shl", "shr"} and len(parts) in {2, 3}:
-        amount: Union[int, str]
-        if len(parts) == 2:
-            amount = 1
-        else:
-            literal = parse_literal(parts[2])
-            amount = literal if literal is not None else parts[2]
-        direction = "left" if op == "shl" else "right"
-        return ShiftInstruction(parts[1], amount, direction)
     if op == "jmp" and len(parts) == 2:
         return Jump(lbl=parts[1])
     if op == "jne" and len(parts) == 2:
@@ -459,47 +423,32 @@ def assembler_interpreter(program):
 
 
 if __name__ == "__main__":
-    import sys
-    import time
     import textwrap
 
-    if len(sys.argv) > 1:
-        program_path = sys.argv[1]
-        with open(program_path, "r", encoding="utf-8") as asm_file:
-            source = asm_file.read()
-        start = time.perf_counter_ns()
-        result = assembler_interpreter(source)
-        end = time.perf_counter_ns()
-        print(result)
-        print(f"Elapsed: {end - start} ns")
-    else:
-        program = textwrap.dedent(
-            """
-                mov   a, 2
-                mov   b, 10
-                mov   c, a
-                mov   d, b
+    program = textwrap.dedent(
+        """
+            mov   a, 2
+            mov   b, 10
+            mov   c, a
+            mov   d, b
+            call  proc_func
+            call  print
+            end
+
+            proc_func:
+                cmp   d, 1
+                je    continue
+                mul   c, a
+                dec   d
                 call  proc_func
-                call  print
-                end
 
-                proc_func:
-                    cmp   d, 1
-                    je    continue
-                    mul   c, a
-                    dec   d
-                    call  proc_func
+            continue:
+                ret
 
-                continue:
-                    ret
-
-                print:
-                    msg a, '^', b, ' = ', c
-                    ret
-            """
-        )
-        start = time.perf_counter_ns()
-        result = assembler_interpreter(program)
-        end = time.perf_counter_ns()
-        print(result)
-        print(f"Elapsed: {end - start} ns")
+            print:
+                msg a, '^', b, ' = ', c
+                ret
+        """
+    )
+    registers = assembler_interpreter(program)
+    print(registers)
