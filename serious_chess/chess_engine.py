@@ -6,6 +6,7 @@ Over the top, but seemed fun to do.
 """
 
 from dataclasses import dataclass, field
+import time
 from enum import IntEnum
 from collections import deque
 from typing import Deque, Dict, List, Optional, Tuple
@@ -19,16 +20,10 @@ from types_and_masks import (
     CastlingRights,
     Color,
     U64,
-    chebyshev_dist,
     compute_position_key,
-    generate_k_attack_bm,
-    generate_king_moves,
     generate_next_move,
-    generate_rook_attack_bm,
+    generate_legal_moves,
     is_in_check,
-    iter_bits,
-    minimax,
-    print_attack_mask,
     to_u64,
     BRD_SQ_NUM,
 )
@@ -53,6 +48,88 @@ def sq2coord(square: int) -> str:
     return f"{FILES[file_idx]}{rank}"
 
 
+def format_san_move(
+    _side: Color,
+    moved_piece: Pcs,
+    from_sq: int,
+    to_sq: int,
+    captured_piece: Pcs,
+) -> str:
+    """Return a lightweight SAN-like move string (no check/mate annotation)."""
+
+    piece_letter = moved_piece.name.upper()
+    san = "" if piece_letter == "P" else piece_letter
+
+    if captured_piece != Pcs.empty:
+        if san == "":
+            san = sq2coord(from_sq)[0]
+        san += "x"
+
+    san += sq2coord(to_sq)
+    return san
+
+
+def write_pgn(
+    filename: str,
+    moves: List[Tuple[Color, str]],
+    initial_fen: str,
+    result: str,
+    starting_side: Color,
+) -> None:
+    """Write a simple PGN file including the initial FEN setup."""
+
+    headers = [
+        '[Event "Serious Chess"]',
+        '[Site "Local"]',
+        '[Date "????.??.??"]',
+        '[Round "-"]',
+        '[White "Engine"]',
+        '[Black "Engine"]',
+        '[SetUp "1"]',
+        f'[FEN "{initial_fen}"]',
+        f'[Result "{result}"]',
+    ]
+
+    body = []
+    idx = 0
+    move_number = 1
+    side_to_move = starting_side
+
+    while idx < len(moves):
+        _, san = moves[idx]
+        if side_to_move == Color.white:
+            line = f"{move_number}. {san}"
+            idx += 1
+            side_to_move = Color.black
+            if idx < len(moves) and moves[idx][0] == Color.black:
+                line += f" {moves[idx][1]}"
+                idx += 1
+                side_to_move = Color.white
+            body.append(line)
+            move_number += 1
+        else:
+            line = f"{move_number}... {san}"
+            idx += 1
+            side_to_move = Color.white
+            if idx < len(moves) and moves[idx][0] == Color.white:
+                line += f" {moves[idx][1]}"
+                idx += 1
+                side_to_move = Color.black
+            body.append(line)
+            move_number += 1
+
+    if body:
+        body_text = " ".join(body) + f" {result}"
+    else:
+        body_text = result
+
+    with open(filename, "w", encoding="ascii") as pgn_file:
+        for header in headers:
+            pgn_file.write(header + "\n")
+        pgn_file.write("\n")
+        pgn_file.write(body_text.strip() + "\n")
+
+
 _square_vals = {
     f"{file}{rank}": fr2sq(file_idx, rank)
     for rank in RANKS
@@ -64,8 +141,9 @@ Sqr = IntEnum("Square", _square_vals)
 CANONICAL_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 wE4_FEN = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1"
 RUY_LOPEZ_FEN = "r1bqkb1r/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4"
-ROOK_ENDGAME = "8/8/8/8/5R2/3k4/5K2/8 b - - 0 1"
-ROOK_ENDGAME_CHECK = "8/8/8/8/3k1R2/8/5K2/8 b - - 0 1"
+ROOK_ENDGAME = "8/8/8/8/5R2/3k4/5K2/8 w - - 0 1"
+OTHER_ROOK_ENDGAME = "8/52k/8/8/7K/8/8/R7 w - - 0 1"
+HARD_ROOK_ENDGAME = "8/8/8/8/8/8/K1R5/7k w - - 0 1"
 
 
 def _empty_piece_bitboards() -> Dict[Color, Dict[Pcs, U64]]:
@@ -128,6 +206,16 @@ class Board:
         self.position_key = compute_position_key(self)
         self.history.append(self.position_key)
 
+    def has_legal_move(self, side: Optional[Color] = None) -> bool:
+        side_to_check = side if side is not None else self.side
+        for move in generate_legal_moves(self, side_to_check):
+            undo = self.make_move(*move)
+            still_in_check = is_in_check(self, side_to_check)
+            self.undo_move(undo)
+            if not still_in_check:
+                return True
+        return False
+
     def to_fen(self):
         fen_parts = []
         for rank in range(8, 0, -1):
@@ -161,11 +249,21 @@ class Board:
         if self.king_captured is not None:
             return True
 
-        moves = generate_king_moves(self, self.side)
-        if int(moves) == 0:
-            return True
+        return not self.has_legal_move(self.side)
 
-        return False
+    def is_checkmate(self) -> bool:
+        if self.king_captured is not None:
+            return True
+        if self.has_legal_move(self.side):
+            return False
+        return is_in_check(self, self.side)
+
+    def is_stalemate(self) -> bool:
+        if self.king_captured is not None:
+            return False
+        if self.has_legal_move(self.side):
+            return False
+        return not is_in_check(self, self.side)
 
     def make_move(self, from_sq: int, to_sq: int) -> Undo:
         moved_piece = self.pieces[from_sq]
@@ -361,7 +459,7 @@ def parse_fen(fen_str) -> Fen:
     return fen
 
 
-def print_board(board: Board):
+def print_board_terminal(board: Board):
     for rank in range(8, 0, -1):
         line = f"{rank} |"
         for file in FILES:
@@ -374,12 +472,6 @@ def print_board(board: Board):
         print(line)
     print("--------------------------")
     print("    a  b  c  d  e  f  g  h")
-
-
-# def move(board: Board, from_sq: int, to_sq: int):
-#     piece = board.pieces[from_sq]
-#     board.pieces[to_sq] = piece
-#     board.pieces[from_sq] = Pcs.empty
 
 
 def init_bitboards(board: Board):
@@ -428,75 +520,100 @@ def init_bitboards(board: Board):
 
 
 if __name__ == "__main__":
+    start_time = time.perf_counter()
     # fen = parse_fen("8/8/2k5/8/4KP2/8/8/8 w - - 0 1")
     # fen = parse_fen(ROOK_ENDGAME)
-    fen = parse_fen(ROOK_ENDGAME_CHECK)
+    # fen = parse_fen(OTHER_ROOK_ENDGAME)
+    fen = parse_fen(HARD_ROOK_ENDGAME)
     # fen = parse_fen(RUY_LOPEZ_FEN)
 
     board = Board(pieces=fen.pieces)
     print("The board\n")
-    print_board(board)
     init_bitboards(board)
-    white_king_attack = generate_k_attack_bm(
-        board,
-        board.kings_pos[Color.white.value],
-        Color.white,
-    )
-    black_king_attack = generate_k_attack_bm(
-        board,
-        board.kings_pos[Color.black.value],
-        Color.black,
-    )
-    print("\nThe white king attack! \n")
+    board.side = Color.white if fen.player == "w" else Color.black
+    initial_fen = board.to_fen()
+    print(f"Starting board FEN: {initial_fen}")
+    show_fancy_board(initial_fen, size=600)
 
-    white_king_mask = int(white_king_attack) & ~int(black_king_attack)
-    white_king_attack = to_u64(white_king_mask)
-
-    print_attack_mask(white_king_attack, pieces=board.pieces)
-
-    white_rook_attack = generate_rook_attack_bm(
-        board=board,
-        sq64=board.rooks_pos[0],
-        side=Color.white,
-    )
-    print("\nThe white rook attack rays \n")
-    print_attack_mask(white_rook_attack, pieces=board.pieces)
-
-    current_side = Color.black
-    game_moves = 0
-    while board.king_captured is None:
-        game_moves += 1
-        print(f"\nMove {game_moves}, {current_side.name} to move")
-        move = generate_next_move(board, current_side)
+    current_side = board.side
+    starting_side = current_side
+    ply = 0
+    depth = 6
+    move_history: List[Tuple[Color, str]] = []
+    result = "*"
+    while True:
+        board.side = current_side
+        if board.king_captured is not None:
+            winner = Color.white if board.king_captured == Color.black else Color.black
+            result = "1-0" if winner == Color.white else "0-1"
+            print(f"{board.king_captured.name.capitalize()} king captured. Game over.")
+            break
+        if not board.has_legal_move(current_side):
+            if is_in_check(board, current_side):
+                winner = Color.white if current_side == Color.black else Color.black
+                print(f"Checkmate! {winner.name.capitalize()} wins.")
+                print(f"Total moves: {ply // 2 + 1}")
+                result = "1-0" if winner == Color.white else "0-1"
+            else:
+                print("Stalemate.")
+                result = "1/2-1/2"
+            break
+        ply += 1
+        if ply % 2 == 1:
+            game_moves = ply // 2 + 1
+        print(
+            f"\nPly {ply} (Move {game_moves}) - {current_side.name.capitalize()}'s turn"
+        )
+        move = generate_next_move(board, current_side, depth=depth)
         if move is None:
             print("No move found, game over.")
             break
+        from_sq, to_sq = move
+        moved_piece = board.pieces[from_sq]
+        captured_piece = board.pieces[to_sq]
+        san = format_san_move(
+            current_side,
+            moved_piece,
+            from_sq,
+            to_sq,
+            captured_piece,
+        )
+        move_history.append((current_side, san))
         board.make_move(*move)
-        show_fancy_board(board.to_fen(), size=400)
+        show_fancy_board(board.to_fen(), size=600)
         current_side = Color.black if current_side == Color.white else Color.white
-    # generate_next_move(board, Color.white)
 
-    # minimax_score, best_move = minimax(
-    #     board, depth=3, side_to_move=Color.white, alpha=-99999, beta=99999
-    # )
-    # print(f"\nMinimax evaluation score for white: {minimax_score} for move {best_move}")
+    if move_history:
+        print("\nGame PGN:")
+        moves_preview: List[str] = []
+        idx = 0
+        move_no = 1
+        side_to_move = starting_side
+        while idx < len(move_history):
+            side, san = move_history[idx]
+            if side_to_move == Color.white:
+                line = f"{move_no}. {san}"
+                idx += 1
+                side_to_move = Color.black
+                if idx < len(move_history) and move_history[idx][0] == Color.black:
+                    line += f" {move_history[idx][1]}"
+                    idx += 1
+                    side_to_move = Color.white
+                moves_preview.append(line)
+                move_no += 1
+            else:
+                line = f"{move_no}... {san}"
+                idx += 1
+                side_to_move = Color.white
+                if idx < len(move_history) and move_history[idx][0] == Color.white:
+                    line += f" {move_history[idx][1]}"
+                    idx += 1
+                    side_to_move = Color.black
+                moves_preview.append(line)
+                move_no += 1
+        print(" ".join(moves_preview), result)
 
-    # print("\nThe white rook and king attack rays \n")
-    # both_ray = to_u64(int(white_rook_attack) | int(white_king_attack))
-    # print_attack_mask(both_ray, pieces=board.pieces)
+    write_pgn("game.pgn", move_history, initial_fen, result, starting_side)
 
-    # print("\nIs white in check?", is_in_check(board, Color.white))
-    # print("Is black in check?", is_in_check(board, Color.black))
-
-    # print(f"\nPotential black king moves from {board.kings_pos[Color.black.value]}")
-    # black_king_moves = generate_king_moves(board, Color.black)
-    # print_attack_mask(black_king_moves, pieces=board.pieces)
-
-    # # show_fancy_board(our_fen, attacks=black_king_moves, size=400)
-    # black_sq = board.kings_pos[Color.black.value]
-    # for piece_type in WHITE_PIECES:
-    #     for attacker_sq in iter_bits(int(board.pieces_bb[Color.white][piece_type])):
-    #         distance = chebyshev_dist(black_sq, attacker_sq)
-    #         print(
-    #             f"Distance from black king at {black_sq} to {piece_type} at {attacker_sq} is {distance}"
-    #         )
+    elapsed = time.perf_counter() - start_time
+    print(f"\nTotal runtime: {elapsed:.2f} seconds")

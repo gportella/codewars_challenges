@@ -295,9 +295,6 @@ def generate_k_attack_bm(
     friendly_occ = board.occupied[side]
     legal_attacks = to_u64(int(attacks) & ~int(friendly_occ))
 
-    if debug:
-        print_attack_mask(legal_attacks, pieces=board.pieces)
-
     return legal_attacks
 
 
@@ -327,16 +324,6 @@ def is_in_check(board: "Board", side: Color) -> bool:
     return is_check(board, side, board.kings_pos[side.value])
 
 
-def generate_king_moves(board: "Board", side: Color) -> U64:
-    """Generate possible king moves from the given square on the board."""
-    target_positions = U64(0)
-    king_bb = generate_k_attack_bm(board, board.kings_pos[side.value], side)
-    for target_sq in iter_bits(int(king_bb)):
-        if not is_check(board, side, target_sq):
-            target_positions |= U64(1) << target_sq
-    return to_u64(target_positions)
-
-
 def evaluate_board_material(board: "Board") -> int:
     """Evaluate the board position and return a score."""
     score = 0
@@ -344,17 +331,6 @@ def evaluate_board_material(board: "Board") -> int:
         piece = board.pieces[sq]
         score += PIECES_VALUES.get(piece, 0)
     return score
-
-
-def is_checkmate(board: "Board", side: Color) -> bool:
-    """Determine if the given side is in checkmate."""
-    if not is_in_check(board, side):
-        return False
-
-    king_moves = generate_king_moves(board, side)
-    if king_moves != 0:
-        return False
-    return True
 
 
 def evaluate_board(board: "Board") -> int:
@@ -368,23 +344,44 @@ def evaluate_board(board: "Board") -> int:
 
     # show_fancy_board(board.to_fen(), size=300)
     score_move = 0
-    for side in [Color.white, Color.black]:
-        if is_in_check(board, side):
-            score_move -= 10000
-        elif is_in_check(board, Color.white if side == Color.black else Color.black):
-            score_move += 5000
-    score_move += evaluate_board_material(board)
+    if is_in_check(board, Color.white):
+        score_move -= 10000
+    if is_in_check(board, Color.black):
+        score_move += 10000
+    # score_move += evaluate_board_material(board)
     rook_mobility_score = mobility(board, Color.white, Pcs.R)
     king_mobility_score = mobility(board, Color.white, Pcs.K) - mobility(
         board, Color.black, Pcs.K
     )
-    score_move += rook_mobility_score * 10
-    score_move -= king_mobility_score * 10
-    chebyshev_distance = chebyshev_dist(
-        board.kings_pos[Color.white.value], board.kings_pos[Color.black.value]
-    )
-    score_move += (14 - chebyshev_distance) * 20
+    score_move += rook_mobility_score * 3
+    score_move += king_mobility_score * 30
+    score_move += king_progress_score(board)
     return score_move
+
+
+def king_progress_score(board: "Board") -> int:
+    white_king_sq = board.kings_pos[Color.white.value]
+    black_king_sq = board.kings_pos[Color.black.value]
+
+    distance_between_kings = chebyshev_dist(white_king_sq, black_king_sq)
+    score = (7 - distance_between_kings) * 50
+
+    corners = [0, 7, 56, 63]
+    enemy_corner_dist = min(chebyshev_dist(black_king_sq, corner) for corner in corners)
+    own_corner_dist = min(chebyshev_dist(white_king_sq, corner) for corner in corners)
+    score += (7 - enemy_corner_dist) * 20
+    score -= own_corner_dist * 5
+
+    enemy_file = black_king_sq % 8
+    enemy_rank = black_king_sq // 8
+    own_file = white_king_sq % 8
+    own_rank = white_king_sq // 8
+    file_span = abs(enemy_file - own_file)
+    rank_span = abs(enemy_rank - own_rank)
+    board_area = (file_span + 1) * (rank_span + 1)
+    score += (64 - board_area) * 2
+
+    return score
 
 
 def mobility(board: "Board", side: Color, piece_type: Pcs) -> int:
@@ -399,16 +396,15 @@ def mobility(board: "Board", side: Color, piece_type: Pcs) -> int:
         return 0
 
     moves = 0
-    for from_sq in iter_bits(int(board.pieces_bb[side][actual_piece])):
+    for from_sq in iter_bits(board.pieces_bb[side][actual_piece]):
         attack_bm = attack_fn(board, from_sq, side)
-        moves += bin(int(attack_bm)).count("1")
+        moves += attack_bm.bit_count()
     return moves
 
 
 def generate_legal_moves(board: "Board", side: Color):
-    # this could be improved as we know what pieces we do have
     for piece_type in WHITE_PIECES if side == Color.white else BLACK_PIECES:
-        for from_sq in iter_bits(int(board.pieces_bb[side][piece_type])):
+        for from_sq in iter_bits(board.pieces_bb[side][piece_type]):
             attack_bm = attack_vectors[piece_type](board, from_sq, side)
             for to_sq in iter_bits(int(attack_bm)):
                 yield (from_sq, to_sq)
@@ -424,10 +420,13 @@ def minimax(board, depth, side_to_move, alpha, beta):
     for move in generate_legal_moves(board, side_to_move):
         opposite_side = Color.white if side_to_move == Color.black else Color.black
         undo = board.make_move(*move)  # mutate board, remember undo info
-        if board.history.count(board.position_key) > 3:
-            score = 0  # draw by repetition
+        if is_in_check(board, side_to_move):
             board.undo_move(undo)
             continue
+        if board.history.count(board.position_key) > 2:
+            score = 0  # draw by repetition
+            board.undo_move(undo)
+            return (0, move)
         score, _ = minimax(board, depth - 1, opposite_side, alpha, beta)
         board.undo_move(undo)
 
@@ -448,11 +447,11 @@ def minimax(board, depth, side_to_move, alpha, beta):
     return best_score, best_move
 
 
-def generate_next_move(board: "Board", side: Color) -> Optional[Tuple[int, int]]:
+def generate_next_move(
+    board: "Board", side: Color, depth: int = 3
+) -> Optional[Tuple[int, int]]:
     """Generate the next best move for the given side using minimax."""
-    depth = 6  # Set search depth
     _, best_move = minimax(board, depth, side, -math.inf, math.inf)
-    print(f"Best move for {side.name}: {best_move}")
     return best_move
 
 
