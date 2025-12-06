@@ -2,7 +2,17 @@
 
 ## Status 
 
->> WIP! Feeling ambitious, will go for rook endagame, but i might extend it...
+>> Took over a week, but I did it. Grit.
+
+The biggest challange was the time limit. I had started writing a minimax solver and some nicer structure (in [/minimax_engine](./minimax_engine/)). Then moved it all in one place for the kata, but the could not make it work. If the depth was too low, it would not mate on time, and even at depth 1 the code was way to slow. 
+
+Had to change to use DTM tables for the KRK game. A bit of a hack, I still had to do a lot of work to follow repeteitions and potential captures. I thought combining both minimax and this, but was very slow, and turned out the tables and some elbow grease is what I needed, no evaluation. 
+
+I leave the [create_dtm_and_tb_tables.py](create_dtm_and_tb_tables.py) script for creating the compressed look up tables. I embedded the string in the code.
+
+I had to use quite a lot of profiling and tests against Stockfish to make it work, some of the code is still around.
+
+## Kata instructions
 
 One of the basic chess endgames is where only three pieces remain on the board: the two kings and one rook. By 1970 it was proved that the player having the rook can win the game in at most 16 moves. Can you write code that plays this endgame that well?
 
