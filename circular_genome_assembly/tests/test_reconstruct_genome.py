@@ -1,6 +1,6 @@
 import pytest
 
-from solution import reconstruct_genome
+from  genome_assembly_mixed import reconstruct_genome
 from test_solutions import test_solutions
 
 

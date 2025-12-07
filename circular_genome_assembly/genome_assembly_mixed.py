@@ -1,4 +1,5 @@
 #! /usr/bin/env python
+import sys
 from test_solutions import test_solutions
 from typing import List, Tuple, Optional
 from collections import Counter, defaultdict
@@ -483,9 +484,12 @@ def align_read_hamming(reads: List[str], genome: str, max_allowed: int = float("
 
     return good_reads
 
+__all__ = ["reconstruct_genome"]
 
 if __name__ == "__main__":
-    for i, test_case in enumerate(test_solutions):
+    total_tests = len(test_solutions)
+    passed_tests = 0
+    for idx, test_case in enumerate(test_solutions, start=1):
         solution = test_case["solution"]
         reads = test_case["reads"]
         has_errors = test_case.get("has_errors", False)
@@ -494,12 +498,25 @@ if __name__ == "__main__":
         canonical_mine = canonicalize_circular(my_solution)
 
         if canonical_reference != canonical_mine:
-            print("\n#### Wrong! #####\n")
+            progress = f"[{idx}/{total_tests}] FAIL"
+            print(f"\r{progress}", end="", flush=True)
+            print("\n\n#### Wrong! #####\n")
+            print("My trimmed solution")
+            print(my_solution)
+            print("Solution canonical")
+            print(canonical_reference)
+            align_read_hamming([canonical_reference], canonical_mine, max_allowed=1)
+            print()
+            sys.exit("Woops")
         else:
-            print("\n================> That's same sequence")
-        print("My trimmed solution")
-        print(my_solution)
-        print("Solution canonical")
-        print(canonical_reference)
-        align_read_hamming([canonical_reference], canonical_mine, max_allowed=1)
-        print()
+            passed_tests += 1
+            progress = f"[{idx}/{total_tests}] PASS"
+            print(f"\r{progress}", end="", flush=True)
+
+    print()
+    print(
+        f"Completed {total_tests} tests: {passed_tests} passed, {total_tests - passed_tests} failed."
+    )
+            
+
+
