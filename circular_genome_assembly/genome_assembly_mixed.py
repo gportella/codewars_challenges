@@ -420,6 +420,8 @@ def contig_has_mismatches(reads: List[str], contig: str) -> bool:
 
 
 def reconstruct_genome(reads: List[str], has_errors: bool = False) -> str:
+    if not reads:
+        return ""
     my_solution = reconstruct_genome_scs(reads, has_errors=has_errors)
     # print("Initial assembly:", my_solution)
     canonical_mine = canonicalize_circular(my_solution)
@@ -427,11 +429,34 @@ def reconstruct_genome(reads: List[str], has_errors: bool = False) -> str:
     len_read = len(next(iter(reads)))
 
     if len_read > 20 and has_mismatches_contig:
-        my_solution = assemble_debruijn(reads, k=21, min_count=3)
-        canonical_mine = canonicalize_circular(my_solution)
-        reads_fixed = correct_reads(reads, canonical_mine)
-        my_solution = reconstruct_genome_scs(reads_fixed, has_errors=has_errors)
-        canonical_mine = canonicalize_circular(my_solution)
+        original_sequence = canonical_mine
+        best_sequence = None
+        best_len = float("inf")
+        # Try a small, fixed grid without mutating shared state across iterations
+        chosen_params = None
+        for k_val, min_count in [(22, 2), (21, 2), (22, 3)]:
+            candidate = assemble_debruijn(reads, k=k_val, min_count=min_count)
+            if not candidate:
+                continue
+            candidate = canonicalize_circular(candidate)
+            reads_fixed = correct_reads(reads, candidate)
+            candidate = reconstruct_genome_scs(reads_fixed, has_errors=has_errors)
+            candidate = canonicalize_circular(candidate)
+            if not candidate:
+                continue
+            if len(candidate) < best_len:
+                best_sequence = candidate
+                best_len = len(candidate)
+                chosen_params = (k_val, min_count)
+
+        if best_sequence is not None:
+            canonical_mine = best_sequence
+            if chosen_params:
+                print(
+                    f"Selected k={chosen_params[0]}, min_count={chosen_params[1]} for de Bruijn fallback"
+                )
+        else:
+            canonical_mine = original_sequence
 
     return canonical_mine
 
@@ -484,6 +509,7 @@ def align_read_hamming(reads: List[str], genome: str, max_allowed: int = float("
 
     return good_reads
 
+
 __all__ = ["reconstruct_genome"]
 
 if __name__ == "__main__":
@@ -517,6 +543,3 @@ if __name__ == "__main__":
     print(
         f"Completed {total_tests} tests: {passed_tests} passed, {total_tests - passed_tests} failed."
     )
-            
-
-
