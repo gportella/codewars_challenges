@@ -475,8 +475,8 @@ if __name__ == "__main__":
     else:
         program = textwrap.dedent(
             """
-                mov   a, 2
-                mov   b, 10
+                mov   a, 3
+                mov   b, 9
                 mov   c, a
                 mov   d, b
                 call  proc_func
