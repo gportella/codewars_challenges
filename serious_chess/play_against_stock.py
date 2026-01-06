@@ -1,5 +1,5 @@
 #! /usr/bin/env python
-from codewars_submissin.trimmed import play_white_vs_stockfish
+from minimax_engine.trimmed import play_white_vs_stockfish
 
 positions = [
     ("game_failed_1", "Ka4,Rb5 - Ka8"),
